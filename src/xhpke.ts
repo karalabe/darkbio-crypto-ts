@@ -142,7 +142,10 @@ export class PublicKey {
       xhpke_public_key_from_cert_pem(pem, signer.toBytes()),
     );
     const key = new PublicKey(result.slice(0, PUBLIC_KEY_SIZE));
-    const view = new DataView(result.buffer, result.byteOffset + PUBLIC_KEY_SIZE);
+    const view = new DataView(
+      result.buffer,
+      result.byteOffset + PUBLIC_KEY_SIZE,
+    );
     const notBefore = view.getBigUint64(0, false);
     const notAfter = view.getBigUint64(8, false);
     return { key, notBefore, notAfter };
@@ -165,7 +168,10 @@ export class PublicKey {
       xhpke_public_key_from_cert_der(der, signer.toBytes()),
     );
     const key = new PublicKey(result.slice(0, PUBLIC_KEY_SIZE));
-    const view = new DataView(result.buffer, result.byteOffset + PUBLIC_KEY_SIZE);
+    const view = new DataView(
+      result.buffer,
+      result.byteOffset + PUBLIC_KEY_SIZE,
+    );
     const notBefore = view.getBigUint64(0, false);
     const notAfter = view.getBigUint64(8, false);
     return { key, notBefore, notAfter };

@@ -157,8 +157,8 @@ pub fn xhpke_public_key_from_cert_pem(pem: &str, signer: &[u8]) -> Result<Vec<u8
     let signer_pk =
         xdsa::PublicKey::from_bytes(&signer_bytes).map_err(|e| JsError::new(&e.to_string()))?;
 
-    let (pk, not_before, not_after) =
-        xhpke::PublicKey::from_cert_pem(pem, signer_pk).map_err(|e| JsError::new(&e.to_string()))?;
+    let (pk, not_before, not_after) = xhpke::PublicKey::from_cert_pem(pem, signer_pk)
+        .map_err(|e| JsError::new(&e.to_string()))?;
 
     let mut result = Vec::with_capacity(1216 + 16);
     result.extend_from_slice(&pk.to_bytes());

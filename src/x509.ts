@@ -21,4 +21,3 @@ export interface Params {
   /** Maximum number of intermediate CAs allowed below this one (only if isCa is true, ignored for xHPKE). */
   pathLen?: number;
 }
-

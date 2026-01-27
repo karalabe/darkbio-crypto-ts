@@ -157,8 +157,8 @@ pub fn xdsa_public_key_from_cert_der(der: &[u8], signer: &[u8]) -> Result<Vec<u8
     let signer_pk =
         xdsa::PublicKey::from_bytes(&signer_bytes).map_err(|e| JsError::new(&e.to_string()))?;
 
-    let (pk, not_before, not_after) = xdsa::PublicKey::from_cert_der(der, signer_pk)
-        .map_err(|e| JsError::new(&e.to_string()))?;
+    let (pk, not_before, not_after) =
+        xdsa::PublicKey::from_cert_der(der, signer_pk).map_err(|e| JsError::new(&e.to_string()))?;
 
     let mut result = Vec::with_capacity(1984 + 16);
     result.extend_from_slice(&pk.to_bytes());
