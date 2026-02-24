@@ -9,30 +9,28 @@
 //! https://datatracker.ietf.org/doc/html/rfc8152
 //! https://datatracker.ietf.org/doc/html/draft-ietf-cose-hpke
 
-use darkbio_crypto::{cbor, cose, xdsa, xhpke};
+use darkbio_crypto::{cbor, cose};
 use wasm_bindgen::prelude::*;
+
+use crate::xdsa::{XdsaFingerprint, XdsaPublicKey, XdsaSecretKey};
+use crate::xhpke::{XhpkeFingerprint, XhpkePublicKey, XhpkeSecretKey};
 
 /// Creates a COSE_Sign1 signature with an embedded payload.
 #[wasm_bindgen]
 pub fn cose_sign(
     msg_to_embed: &[u8],
     msg_to_auth: &[u8],
-    signer: &[u8],
+    signer: &XdsaSecretKey,
     domain: &[u8],
 ) -> Result<Vec<u8>, JsError> {
     cbor::verify(msg_to_embed)
         .map_err(|e| JsError::new(&format!("invalid payload CBOR: {}", e)))?;
     cbor::verify(msg_to_auth).map_err(|e| JsError::new(&format!("invalid AAD CBOR: {}", e)))?;
 
-    let seed: [u8; 64] = signer
-        .try_into()
-        .map_err(|_| JsError::new("signer must be 64 bytes"))?;
-    let sk = xdsa::SecretKey::from_bytes(&seed);
-
     cose::sign(
         cbor::Raw(msg_to_embed.to_vec()),
         cbor::Raw(msg_to_auth.to_vec()),
-        &sk,
+        &signer.inner,
         domain,
     )
     .map_err(|e| JsError::new(&e.to_string()))
@@ -42,17 +40,12 @@ pub fn cose_sign(
 #[wasm_bindgen]
 pub fn cose_sign_detached(
     msg_to_auth: &[u8],
-    signer: &[u8],
+    signer: &XdsaSecretKey,
     domain: &[u8],
 ) -> Result<Vec<u8>, JsError> {
     cbor::verify(msg_to_auth).map_err(|e| JsError::new(&format!("invalid AAD CBOR: {}", e)))?;
 
-    let seed: [u8; 64] = signer
-        .try_into()
-        .map_err(|_| JsError::new("signer must be 64 bytes"))?;
-    let sk = xdsa::SecretKey::from_bytes(&seed);
-
-    cose::sign_detached(cbor::Raw(msg_to_auth.to_vec()), &sk, domain)
+    cose::sign_detached(cbor::Raw(msg_to_auth.to_vec()), &signer.inner, domain)
         .map_err(|e| JsError::new(&e.to_string()))
 }
 
@@ -61,21 +54,16 @@ pub fn cose_sign_detached(
 pub fn cose_verify(
     msg_to_check: &[u8],
     msg_to_auth: &[u8],
-    verifier: &[u8],
+    verifier: &XdsaPublicKey,
     domain: &[u8],
     max_drift_secs: Option<u64>,
 ) -> Result<Vec<u8>, JsError> {
     cbor::verify(msg_to_auth).map_err(|e| JsError::new(&format!("invalid AAD CBOR: {}", e)))?;
 
-    let pk_bytes: [u8; 1984] = verifier
-        .try_into()
-        .map_err(|_| JsError::new("verifier must be 1984 bytes"))?;
-    let pk = xdsa::PublicKey::from_bytes(&pk_bytes).map_err(|e| JsError::new(&e.to_string()))?;
-
     let raw: cbor::Raw = cose::verify(
         msg_to_check,
         cbor::Raw(msg_to_auth.to_vec()),
-        &pk,
+        &verifier.inner,
         domain,
         max_drift_secs,
     )
@@ -88,21 +76,16 @@ pub fn cose_verify(
 pub fn cose_verify_detached(
     msg_to_check: &[u8],
     msg_to_auth: &[u8],
-    verifier: &[u8],
+    verifier: &XdsaPublicKey,
     domain: &[u8],
     max_drift_secs: Option<u64>,
 ) -> Result<(), JsError> {
     cbor::verify(msg_to_auth).map_err(|e| JsError::new(&format!("invalid AAD CBOR: {}", e)))?;
 
-    let pk_bytes: [u8; 1984] = verifier
-        .try_into()
-        .map_err(|_| JsError::new("verifier must be 1984 bytes"))?;
-    let pk = xdsa::PublicKey::from_bytes(&pk_bytes).map_err(|e| JsError::new(&e.to_string()))?;
-
     cose::verify_detached(
         msg_to_check,
         cbor::Raw(msg_to_auth.to_vec()),
-        &pk,
+        &verifier.inner,
         domain,
         max_drift_secs,
     )
@@ -111,9 +94,9 @@ pub fn cose_verify_detached(
 
 /// Extracts the signer's fingerprint from a COSE_Sign1 without verifying.
 #[wasm_bindgen]
-pub fn cose_signer(signature: &[u8]) -> Result<Vec<u8>, JsError> {
+pub fn cose_signer(signature: &[u8]) -> Result<XdsaFingerprint, JsError> {
     let fp = cose::signer(signature).map_err(|e| JsError::new(&e.to_string()))?;
-    Ok(fp.to_bytes().to_vec())
+    Ok(XdsaFingerprint { inner: fp })
 }
 
 /// Extracts the embedded payload from a COSE_Sign1 without verifying.
@@ -125,9 +108,9 @@ pub fn cose_peek(signature: &[u8]) -> Result<Vec<u8>, JsError> {
 
 /// Extracts the recipient's fingerprint from a COSE_Encrypt0 without decrypting.
 #[wasm_bindgen]
-pub fn cose_recipient(ciphertext: &[u8]) -> Result<Vec<u8>, JsError> {
+pub fn cose_recipient(ciphertext: &[u8]) -> Result<XhpkeFingerprint, JsError> {
     let fp = cose::recipient(ciphertext).map_err(|e| JsError::new(&e.to_string()))?;
-    Ok(fp.to_bytes().to_vec())
+    Ok(XhpkeFingerprint { inner: fp })
 }
 
 /// Signs a message then encrypts it to a recipient (sign-then-encrypt).
@@ -135,29 +118,18 @@ pub fn cose_recipient(ciphertext: &[u8]) -> Result<Vec<u8>, JsError> {
 pub fn cose_seal(
     msg_to_seal: &[u8],
     msg_to_auth: &[u8],
-    signer: &[u8],
-    recipient: &[u8],
+    signer: &XdsaSecretKey,
+    recipient: &XhpkePublicKey,
     domain: &[u8],
 ) -> Result<Vec<u8>, JsError> {
     cbor::verify(msg_to_seal).map_err(|e| JsError::new(&format!("invalid payload CBOR: {}", e)))?;
     cbor::verify(msg_to_auth).map_err(|e| JsError::new(&format!("invalid AAD CBOR: {}", e)))?;
 
-    let signer_seed: [u8; 64] = signer
-        .try_into()
-        .map_err(|_| JsError::new("signer must be 64 bytes"))?;
-    let signer_sk = xdsa::SecretKey::from_bytes(&signer_seed);
-
-    let recipient_bytes: [u8; 1216] = recipient
-        .try_into()
-        .map_err(|_| JsError::new("recipient must be 1216 bytes"))?;
-    let recipient_pk =
-        xhpke::PublicKey::from_bytes(&recipient_bytes).map_err(|e| JsError::new(&e.to_string()))?;
-
     cose::seal(
         cbor::Raw(msg_to_seal.to_vec()),
         cbor::Raw(msg_to_auth.to_vec()),
-        &signer_sk,
-        &recipient_pk,
+        &signer.inner,
+        &recipient.inner,
         domain,
     )
     .map_err(|e| JsError::new(&e.to_string()))
@@ -168,29 +140,18 @@ pub fn cose_seal(
 pub fn cose_open(
     msg_to_open: &[u8],
     msg_to_auth: &[u8],
-    recipient: &[u8],
-    sender: &[u8],
+    recipient: &XhpkeSecretKey,
+    sender: &XdsaPublicKey,
     domain: &[u8],
     max_drift_secs: Option<u64>,
 ) -> Result<Vec<u8>, JsError> {
     cbor::verify(msg_to_auth).map_err(|e| JsError::new(&format!("invalid AAD CBOR: {}", e)))?;
 
-    let recipient_seed: [u8; 32] = recipient
-        .try_into()
-        .map_err(|_| JsError::new("recipient must be 32 bytes"))?;
-    let recipient_sk = xhpke::SecretKey::from_bytes(&recipient_seed);
-
-    let sender_bytes: [u8; 1984] = sender
-        .try_into()
-        .map_err(|_| JsError::new("sender must be 1984 bytes"))?;
-    let sender_pk =
-        xdsa::PublicKey::from_bytes(&sender_bytes).map_err(|e| JsError::new(&e.to_string()))?;
-
     let raw: cbor::Raw = cose::open(
         msg_to_open,
         cbor::Raw(msg_to_auth.to_vec()),
-        &recipient_sk,
-        &sender_pk,
+        &recipient.inner,
+        &sender.inner,
         domain,
         max_drift_secs,
     )
@@ -203,21 +164,15 @@ pub fn cose_open(
 pub fn cose_encrypt(
     sign1: &[u8],
     msg_to_auth: &[u8],
-    recipient: &[u8],
+    recipient: &XhpkePublicKey,
     domain: &[u8],
 ) -> Result<Vec<u8>, JsError> {
     cbor::verify(msg_to_auth).map_err(|e| JsError::new(&format!("invalid AAD CBOR: {}", e)))?;
 
-    let recipient_bytes: [u8; 1216] = recipient
-        .try_into()
-        .map_err(|_| JsError::new("recipient must be 1216 bytes"))?;
-    let recipient_pk =
-        xhpke::PublicKey::from_bytes(&recipient_bytes).map_err(|e| JsError::new(&e.to_string()))?;
-
     cose::encrypt(
         sign1,
         cbor::Raw(msg_to_auth.to_vec()),
-        &recipient_pk,
+        &recipient.inner,
         domain,
     )
     .map_err(|e| JsError::new(&e.to_string()))
@@ -228,20 +183,15 @@ pub fn cose_encrypt(
 pub fn cose_decrypt(
     msg_to_open: &[u8],
     msg_to_auth: &[u8],
-    recipient: &[u8],
+    recipient: &XhpkeSecretKey,
     domain: &[u8],
 ) -> Result<Vec<u8>, JsError> {
     cbor::verify(msg_to_auth).map_err(|e| JsError::new(&format!("invalid AAD CBOR: {}", e)))?;
 
-    let recipient_seed: [u8; 32] = recipient
-        .try_into()
-        .map_err(|_| JsError::new("recipient must be 32 bytes"))?;
-    let recipient_sk = xhpke::SecretKey::from_bytes(&recipient_seed);
-
     cose::decrypt(
         msg_to_open,
         cbor::Raw(msg_to_auth.to_vec()),
-        &recipient_sk,
+        &recipient.inner,
         domain,
     )
     .map_err(|e| JsError::new(&e.to_string()))

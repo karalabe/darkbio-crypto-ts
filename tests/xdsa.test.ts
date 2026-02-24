@@ -141,7 +141,7 @@ describe("xdsa", () => {
   it("roundtrips SecretKey through bytes", async () => {
     const sk = await SecretKey.generate();
     const bytes = sk.toBytes();
-    const sk2 = SecretKey.fromBytes(bytes);
+    const sk2 = await SecretKey.fromBytes(bytes);
     expect(toHex(sk2.toBytes())).toBe(toHex(sk.toBytes()));
   });
 
@@ -149,7 +149,7 @@ describe("xdsa", () => {
     const sk = await SecretKey.generate();
     const pk = await sk.publicKey();
     const bytes = pk.toBytes();
-    const pk2 = PublicKey.fromBytes(bytes);
+    const pk2 = await PublicKey.fromBytes(bytes);
     expect(toHex(pk2.toBytes())).toBe(toHex(pk.toBytes()));
   });
 
@@ -158,7 +158,7 @@ describe("xdsa", () => {
     const message = new TextEncoder().encode("test");
     const sig = await sk.sign(message);
     const bytes = sig.toBytes();
-    const sig2 = Signature.fromBytes(bytes);
+    const sig2 = await Signature.fromBytes(bytes);
     expect(toHex(sig2.toBytes())).toBe(toHex(sig.toBytes()));
   });
 
@@ -166,7 +166,7 @@ describe("xdsa", () => {
     const sk = await SecretKey.generate();
     const fp = await sk.fingerprint();
     const bytes = fp.toBytes();
-    const fp2 = Fingerprint.fromBytes(bytes);
+    const fp2 = await Fingerprint.fromBytes(bytes);
     expect(toHex(fp2.toBytes())).toBe(toHex(fp.toBytes()));
   });
 

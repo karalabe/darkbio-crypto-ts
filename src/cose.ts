@@ -45,12 +45,6 @@ async function ensureInit(): Promise<void> {
 
 /**
  * Create a COSE_Sign1 signature with an embedded payload.
- *
- * @param msgToEmbed - The payload to embed and sign (will be CBOR encoded)
- * @param msgToAuth - Additional authenticated data (will be CBOR encoded)
- * @param signer - The xDSA secret key
- * @param domain - Application-specific domain separator
- * @returns The serialized COSE_Sign1 structure
  */
 export async function sign<E, A>(
   msgToEmbed: E,
@@ -61,18 +55,11 @@ export async function sign<E, A>(
   await ensureInit();
   const embedBytes = cborEncode(msgToEmbed);
   const authBytes = cborEncode(msgToAuth);
-  return new Uint8Array(
-    cose_sign(embedBytes, authBytes, signer.toBytes(), domain),
-  );
+  return new Uint8Array(cose_sign(embedBytes, authBytes, signer._wasm, domain));
 }
 
 /**
  * Create a COSE_Sign1 signature without an embedded payload (detached mode).
- *
- * @param msgToAuth - The message to authenticate (will be CBOR encoded)
- * @param signer - The xDSA secret key
- * @param domain - Application-specific domain separator
- * @returns The serialized COSE_Sign1 structure (with null payload)
  */
 export async function signDetached<A>(
   msgToAuth: A,
@@ -81,20 +68,11 @@ export async function signDetached<A>(
 ): Promise<Uint8Array> {
   await ensureInit();
   const authBytes = cborEncode(msgToAuth);
-  return new Uint8Array(
-    cose_sign_detached(authBytes, signer.toBytes(), domain),
-  );
+  return new Uint8Array(cose_sign_detached(authBytes, signer._wasm, domain));
 }
 
 /**
  * Verify a COSE_Sign1 signature and return the embedded payload.
- *
- * @param msgToCheck - The COSE_Sign1 structure to verify
- * @param msgToAuth - Additional authenticated data (will be CBOR encoded)
- * @param verifier - The xDSA public key
- * @param domain - Application-specific domain separator
- * @param maxDriftSecs - Maximum allowed clock drift (undefined for no time check)
- * @returns The decoded embedded payload
  */
 export async function verify<T, A>(
   msgToCheck: Uint8Array,
@@ -108,7 +86,7 @@ export async function verify<T, A>(
   const payloadBytes = cose_verify(
     msgToCheck,
     authBytes,
-    verifier.toBytes(),
+    verifier._wasm,
     domain,
     maxDriftSecs !== undefined ? BigInt(maxDriftSecs) : undefined,
   );
@@ -117,12 +95,6 @@ export async function verify<T, A>(
 
 /**
  * Verify a COSE_Sign1 signature with a detached payload.
- *
- * @param msgToCheck - The COSE_Sign1 structure to verify
- * @param msgToAuth - The detached message to authenticate (will be CBOR encoded)
- * @param verifier - The xDSA public key
- * @param domain - Application-specific domain separator
- * @param maxDriftSecs - Maximum allowed clock drift (undefined for no time check)
  */
 export async function verifyDetached<A>(
   msgToCheck: Uint8Array,
@@ -136,7 +108,7 @@ export async function verifyDetached<A>(
   cose_verify_detached(
     msgToCheck,
     authBytes,
-    verifier.toBytes(),
+    verifier._wasm,
     domain,
     maxDriftSecs !== undefined ? BigInt(maxDriftSecs) : undefined,
   );
@@ -144,14 +116,10 @@ export async function verifyDetached<A>(
 
 /**
  * Extract the signer's fingerprint from a COSE_Sign1 without verifying.
- *
- * @param signature - The COSE_Sign1 structure
- * @returns The signer fingerprint
  */
 export async function signer(signature: Uint8Array): Promise<XdsaFingerprint> {
   await ensureInit();
-  const fp = new Uint8Array(cose_signer(signature));
-  return XdsaFingerprint.fromBytes(fp);
+  return new XdsaFingerprint(cose_signer(signature));
 }
 
 /**
@@ -159,9 +127,6 @@ export async function signer(signature: Uint8Array): Promise<XdsaFingerprint> {
  *
  * Warning: The returned payload is unauthenticated and should not be
  * trusted until verified with `verify`.
- *
- * @param signature - The COSE_Sign1 structure
- * @returns The decoded (but unverified) payload
  */
 export async function peek<T>(signature: Uint8Array): Promise<T> {
   await ensureInit();
@@ -171,27 +136,16 @@ export async function peek<T>(signature: Uint8Array): Promise<T> {
 
 /**
  * Extract the recipient's fingerprint from a COSE_Encrypt0 without decrypting.
- *
- * @param ciphertext - The COSE_Encrypt0 structure
- * @returns The recipient fingerprint
  */
 export async function recipient(
   ciphertext: Uint8Array,
 ): Promise<XhpkeFingerprint> {
   await ensureInit();
-  const fp = new Uint8Array(cose_recipient(ciphertext));
-  return XhpkeFingerprint.fromBytes(fp);
+  return new XhpkeFingerprint(cose_recipient(ciphertext));
 }
 
 /**
  * Sign a message then encrypt it to a recipient (sign-then-encrypt).
- *
- * @param msgToSeal - The payload to sign and encrypt (will be CBOR encoded)
- * @param msgToAuth - Additional authenticated data (will be CBOR encoded)
- * @param signerKey - The xDSA secret key to sign with
- * @param recipientKey - The xHPKE public key to encrypt to
- * @param domain - Application-specific domain separator
- * @returns The sealed COSE structure
  */
 export async function seal<S, A>(
   msgToSeal: S,
@@ -207,8 +161,8 @@ export async function seal<S, A>(
     cose_seal(
       sealBytes,
       authBytes,
-      signerKey.toBytes(),
-      recipientKey.toBytes(),
+      signerKey._wasm,
+      recipientKey._wasm,
       domain,
     ),
   );
@@ -216,14 +170,6 @@ export async function seal<S, A>(
 
 /**
  * Decrypt and verify a sealed message.
- *
- * @param msgToOpen - The sealed COSE structure
- * @param msgToAuth - Additional authenticated data (will be CBOR encoded)
- * @param recipientKey - The xHPKE secret key to decrypt with
- * @param senderKey - The xDSA public key to verify against
- * @param domain - Application-specific domain separator
- * @param maxDriftSecs - Maximum allowed clock drift (undefined for no time check)
- * @returns The decoded payload
  */
 export async function open<T, A>(
   msgToOpen: Uint8Array,
@@ -238,8 +184,8 @@ export async function open<T, A>(
   const payloadBytes = cose_open(
     msgToOpen,
     authBytes,
-    recipientKey.toBytes(),
-    senderKey.toBytes(),
+    recipientKey._wasm,
+    senderKey._wasm,
     domain,
     maxDriftSecs !== undefined ? BigInt(maxDriftSecs) : undefined,
   );
@@ -248,16 +194,6 @@ export async function open<T, A>(
 
 /**
  * Encrypt an already-signed COSE_Sign1 to a recipient.
- *
- * For most use cases, prefer `seal` which signs and encrypts in one step.
- * Use this only when re-encrypting a message to a different recipient
- * without access to the original signer's key.
- *
- * @param sign1 - The COSE_Sign1 structure to encrypt
- * @param msgToAuth - Additional authenticated data (will be CBOR encoded)
- * @param recipientKey - The xHPKE public key to encrypt to
- * @param domain - Application-specific domain separator
- * @returns The COSE_Encrypt0 structure
  */
 export async function encrypt<A>(
   sign1: Uint8Array,
@@ -268,21 +204,12 @@ export async function encrypt<A>(
   await ensureInit();
   const authBytes = cborEncode(msgToAuth);
   return new Uint8Array(
-    cose_encrypt(sign1, authBytes, recipientKey.toBytes(), domain),
+    cose_encrypt(sign1, authBytes, recipientKey._wasm, domain),
   );
 }
 
 /**
  * Decrypt a sealed message without verifying the signature.
- *
- * This allows inspecting the signer before verification. Use `signer` to
- * extract the signer's fingerprint, then verify with `verify`.
- *
- * @param msgToOpen - The COSE_Encrypt0 structure
- * @param msgToAuth - Additional authenticated data (will be CBOR encoded)
- * @param recipientKey - The xHPKE secret key to decrypt with
- * @param domain - Application-specific domain separator
- * @returns The decrypted COSE_Sign1 structure (not yet verified)
  */
 export async function decrypt<A>(
   msgToOpen: Uint8Array,
@@ -293,6 +220,6 @@ export async function decrypt<A>(
   await ensureInit();
   const authBytes = cborEncode(msgToAuth);
   return new Uint8Array(
-    cose_decrypt(msgToOpen, authBytes, recipientKey.toBytes(), domain),
+    cose_decrypt(msgToOpen, authBytes, recipientKey._wasm, domain),
   );
 }

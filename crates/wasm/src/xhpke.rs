@@ -11,6 +11,8 @@
 use darkbio_crypto::xhpke;
 use wasm_bindgen::prelude::*;
 
+use crate::xdsa::{XdsaPublicKey, XdsaSecretKey};
+
 /// Size of the secret key seed in bytes.
 #[wasm_bindgen]
 pub fn xhpke_secret_key_size() -> usize {
@@ -35,133 +37,299 @@ pub fn xhpke_fingerprint_size() -> usize {
     xhpke::FINGERPRINT_SIZE
 }
 
-/// Generates a new random private key.
+/// Opaque xHPKE secret key. Key material stays inside WASM memory.
 #[wasm_bindgen]
-pub fn xhpke_generate() -> Vec<u8> {
-    xhpke::SecretKey::generate().to_bytes().to_vec()
+pub struct XhpkeSecretKey {
+    pub(crate) inner: xhpke::SecretKey,
 }
 
-/// Derives the public key from a secret key.
 #[wasm_bindgen]
-pub fn xhpke_public_key(secret_key: &[u8]) -> Result<Vec<u8>, JsError> {
-    let seed: [u8; 32] = secret_key
-        .try_into()
-        .map_err(|_| JsError::new("secret key must be 32 bytes"))?;
-    let sk = xhpke::SecretKey::from_bytes(&seed);
-    Ok(sk.public_key().to_bytes().to_vec())
-}
-
-/// Computes the fingerprint (SHA-256 hash) of a public key.
-#[wasm_bindgen]
-pub fn xhpke_fingerprint(public_key: &[u8]) -> Result<Vec<u8>, JsError> {
-    let bytes: [u8; 1216] = public_key
-        .try_into()
-        .map_err(|_| JsError::new("public key must be 1216 bytes"))?;
-    let pk = xhpke::PublicKey::from_bytes(&bytes).map_err(|e| JsError::new(&e.to_string()))?;
-    Ok(pk.fingerprint().to_bytes().to_vec())
-}
-
-/// Seals (encrypts) a message to a public key.
-/// Returns: encapsulated key (1120 bytes) || ciphertext
-#[wasm_bindgen]
-pub fn xhpke_seal(
-    public_key: &[u8],
-    msg_to_seal: &[u8],
-    msg_to_auth: &[u8],
-    domain: &[u8],
-) -> Result<Vec<u8>, JsError> {
-    let pk_bytes: [u8; 1216] = public_key
-        .try_into()
-        .map_err(|_| JsError::new("public key must be 1216 bytes"))?;
-    let pk = xhpke::PublicKey::from_bytes(&pk_bytes).map_err(|e| JsError::new(&e.to_string()))?;
-
-    let (encap_key, ciphertext) = pk
-        .seal(msg_to_seal, msg_to_auth, domain)
-        .map_err(|e| JsError::new(&format!("seal failed: {:?}", e)))?;
-
-    let mut result = Vec::with_capacity(encap_key.len() + ciphertext.len());
-    result.extend_from_slice(&encap_key);
-    result.extend_from_slice(&ciphertext);
-    Ok(result)
-}
-
-/// Opens (decrypts) a sealed message with a secret key.
-/// Input: encapsulated key (1120 bytes) || ciphertext
-#[wasm_bindgen]
-pub fn xhpke_open(
-    secret_key: &[u8],
-    sealed: &[u8],
-    msg_to_auth: &[u8],
-    domain: &[u8],
-) -> Result<Vec<u8>, JsError> {
-    let seed: [u8; 32] = secret_key
-        .try_into()
-        .map_err(|_| JsError::new("secret key must be 32 bytes"))?;
-    let sk = xhpke::SecretKey::from_bytes(&seed);
-
-    if sealed.len() < xhpke::ENCAP_KEY_SIZE {
-        return Err(JsError::new("sealed data too short"));
+impl XhpkeSecretKey {
+    /// Generates a new random private key.
+    pub fn generate() -> Self {
+        Self {
+            inner: xhpke::SecretKey::generate(),
+        }
     }
-    let session_key: [u8; 1120] = sealed[..xhpke::ENCAP_KEY_SIZE]
-        .try_into()
-        .map_err(|_| JsError::new("invalid encapsulated key"))?;
-    let ciphertext = &sealed[xhpke::ENCAP_KEY_SIZE..];
 
-    sk.open(&session_key, ciphertext, msg_to_auth, domain)
-        .map_err(|e| JsError::new(&format!("open failed: {:?}", e)))
+    /// Creates a private key from a 32-byte seed.
+    pub fn from_bytes(bytes: &[u8]) -> Result<XhpkeSecretKey, JsError> {
+        let seed: [u8; 32] = bytes
+            .try_into()
+            .map_err(|_| JsError::new("secret key must be 32 bytes"))?;
+        Ok(Self {
+            inner: xhpke::SecretKey::from_bytes(&seed),
+        })
+    }
+
+    /// Parses a secret key from PEM format.
+    pub fn from_pem(pem: &str) -> Result<XhpkeSecretKey, JsError> {
+        Ok(Self {
+            inner: xhpke::SecretKey::from_pem(pem).map_err(|e| JsError::new(&e.to_string()))?,
+        })
+    }
+
+    /// Serializes the secret key to a 32-byte seed.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        self.inner.to_bytes().to_vec()
+    }
+
+    /// Serializes the secret key to PEM format.
+    pub fn to_pem(&self) -> String {
+        self.inner.to_pem()
+    }
+
+    /// Returns the public key corresponding to this private key.
+    pub fn public_key(&self) -> XhpkePublicKey {
+        XhpkePublicKey {
+            inner: self.inner.public_key(),
+        }
+    }
+
+    /// Returns a 32-byte fingerprint uniquely identifying this key.
+    pub fn fingerprint(&self) -> XhpkeFingerprint {
+        XhpkeFingerprint {
+            inner: self.inner.fingerprint(),
+        }
+    }
+
+    /// Creates an HPKE receiver context for multi-message decryption.
+    pub fn new_receiver(&self, encap_key: &[u8], domain: &[u8]) -> Result<XhpkeReceiver, JsError> {
+        let encap_key_array: [u8; 1120] = encap_key
+            .try_into()
+            .map_err(|_| JsError::new("encapsulated key must be 1120 bytes"))?;
+
+        let receiver = self
+            .inner
+            .new_receiver(&encap_key_array, domain)
+            .map_err(|e| JsError::new(&format!("new_receiver failed: {:?}", e)))?;
+
+        Ok(XhpkeReceiver { inner: receiver })
+    }
+
+    /// Decrypts a single-shot sealed message.
+    /// Input: encapsulated key (1120 bytes) || ciphertext
+    pub fn open(
+        &self,
+        sealed: &[u8],
+        msg_to_auth: &[u8],
+        domain: &[u8],
+    ) -> Result<Vec<u8>, JsError> {
+        if sealed.len() < xhpke::ENCAP_KEY_SIZE {
+            return Err(JsError::new("sealed data too short"));
+        }
+        let session_key: [u8; 1120] = sealed[..xhpke::ENCAP_KEY_SIZE]
+            .try_into()
+            .map_err(|_| JsError::new("invalid encapsulated key"))?;
+        let ciphertext = &sealed[xhpke::ENCAP_KEY_SIZE..];
+
+        self.inner
+            .open(&session_key, ciphertext, msg_to_auth, domain)
+            .map_err(|e| JsError::new(&format!("open failed: {:?}", e)))
+    }
 }
 
-/// Creates an HPKE sender context for multi-message encryption to the given
-/// public key. Returns an opaque `XhpkeSender` that holds both the encryption
-/// context and the 1120-byte encapsulated key (retrievable via `encap_key()`).
-///
-/// Messages encrypted with the returned sender must be decrypted in order by
-/// the corresponding receiver context.
+/// Opaque xHPKE public key. Key material stays inside WASM memory.
 #[wasm_bindgen]
-pub fn xhpke_new_sender(public_key: &[u8], domain: &[u8]) -> Result<XhpkeSender, JsError> {
-    let pk_bytes: [u8; 1216] = public_key
-        .try_into()
-        .map_err(|_| JsError::new("public key must be 1216 bytes"))?;
-    let pk = xhpke::PublicKey::from_bytes(&pk_bytes).map_err(|e| JsError::new(&e.to_string()))?;
-
-    let (sender, encap_key) = pk
-        .new_sender(domain)
-        .map_err(|e| JsError::new(&format!("new_sender failed: {:?}", e)))?;
-
-    Ok(XhpkeSender {
-        inner: sender,
-        encap_key: encap_key.to_vec(),
-    })
+pub struct XhpkePublicKey {
+    pub(crate) inner: xhpke::PublicKey,
 }
 
-/// Creates an HPKE receiver context for multi-message decryption using the
-/// given secret key and encapsulated key. Messages must be decrypted in the
-/// same order they were encrypted by the corresponding sender.
 #[wasm_bindgen]
-pub fn xhpke_new_receiver(
-    secret_key: &[u8],
-    encap_key: &[u8],
-    domain: &[u8],
-) -> Result<XhpkeReceiver, JsError> {
-    let seed: [u8; 32] = secret_key
-        .try_into()
-        .map_err(|_| JsError::new("secret key must be 32 bytes"))?;
-    let sk = xhpke::SecretKey::from_bytes(&seed);
+impl XhpkePublicKey {
+    /// Creates a public key from a 1216-byte array.
+    pub fn from_bytes(bytes: &[u8]) -> Result<XhpkePublicKey, JsError> {
+        let arr: [u8; 1216] = bytes
+            .try_into()
+            .map_err(|_| JsError::new("public key must be 1216 bytes"))?;
+        Ok(Self {
+            inner: xhpke::PublicKey::from_bytes(&arr).map_err(|e| JsError::new(&e.to_string()))?,
+        })
+    }
 
-    let encap_key_array: [u8; 1120] = encap_key
-        .try_into()
-        .map_err(|_| JsError::new("encapsulated key must be 1120 bytes"))?;
+    /// Parses a public key from PEM format.
+    pub fn from_pem(pem: &str) -> Result<XhpkePublicKey, JsError> {
+        Ok(Self {
+            inner: xhpke::PublicKey::from_pem(pem).map_err(|e| JsError::new(&e.to_string()))?,
+        })
+    }
 
-    let receiver = sk
-        .new_receiver(&encap_key_array, domain)
-        .map_err(|e| JsError::new(&format!("new_receiver failed: {:?}", e)))?;
+    /// Parses a public key from a PEM-encoded X.509 certificate, verifying the signature.
+    pub fn from_cert_pem(pem: &str, signer: &XdsaPublicKey) -> Result<XhpkeCertResult, JsError> {
+        use darkbio_crypto::x509;
 
-    Ok(XhpkeReceiver { inner: receiver })
+        let verified = xhpke::verify_cert_pem(pem, &signer.inner, x509::ValidityCheck::Disabled)
+            .map_err(|e| JsError::new(&e.to_string()))?;
+
+        Ok(XhpkeCertResult {
+            key: xhpke::PublicKey::from_bytes(&verified.public_key.to_bytes())
+                .map_err(|e| JsError::new(&e.to_string()))?,
+            not_before: verified.cert.not_before,
+            not_after: verified.cert.not_after,
+        })
+    }
+
+    /// Parses a public key from a DER-encoded X.509 certificate, verifying the signature.
+    pub fn from_cert_der(der: &[u8], signer: &XdsaPublicKey) -> Result<XhpkeCertResult, JsError> {
+        use darkbio_crypto::x509;
+
+        let verified = xhpke::verify_cert_der(der, &signer.inner, x509::ValidityCheck::Disabled)
+            .map_err(|e| JsError::new(&e.to_string()))?;
+
+        Ok(XhpkeCertResult {
+            key: xhpke::PublicKey::from_bytes(&verified.public_key.to_bytes())
+                .map_err(|e| JsError::new(&e.to_string()))?,
+            not_before: verified.cert.not_before,
+            not_after: verified.cert.not_after,
+        })
+    }
+
+    /// Serializes the public key to a 1216-byte array.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        self.inner.to_bytes().to_vec()
+    }
+
+    /// Serializes the public key to PEM format.
+    pub fn to_pem(&self) -> String {
+        self.inner.to_pem()
+    }
+
+    /// Returns a 32-byte fingerprint uniquely identifying this key.
+    pub fn fingerprint(&self) -> XhpkeFingerprint {
+        XhpkeFingerprint {
+            inner: self.inner.fingerprint(),
+        }
+    }
+
+    /// Creates an HPKE sender context for multi-message encryption.
+    pub fn new_sender(&self, domain: &[u8]) -> Result<XhpkeSender, JsError> {
+        let (sender, encap_key) = self
+            .inner
+            .new_sender(domain)
+            .map_err(|e| JsError::new(&format!("new_sender failed: {:?}", e)))?;
+
+        Ok(XhpkeSender {
+            inner: sender,
+            encap_key: encap_key.to_vec(),
+        })
+    }
+
+    /// Encrypts a single-shot message to this public key.
+    /// Returns: encapsulated key (1120 bytes) || ciphertext
+    pub fn seal(
+        &self,
+        msg_to_seal: &[u8],
+        msg_to_auth: &[u8],
+        domain: &[u8],
+    ) -> Result<Vec<u8>, JsError> {
+        let (encap_key, ciphertext) = self
+            .inner
+            .seal(msg_to_seal, msg_to_auth, domain)
+            .map_err(|e| JsError::new(&format!("seal failed: {:?}", e)))?;
+
+        let mut result = Vec::with_capacity(encap_key.len() + ciphertext.len());
+        result.extend_from_slice(&encap_key);
+        result.extend_from_slice(&ciphertext);
+        Ok(result)
+    }
+
+    /// Generates a PEM-encoded X.509 certificate for this public key.
+    pub fn to_cert_pem(
+        &self,
+        signer: &XdsaSecretKey,
+        subject_name: &str,
+        issuer_name: &str,
+        not_before: u64,
+        not_after: u64,
+    ) -> Result<String, JsError> {
+        use darkbio_crypto::x509;
+
+        let template = x509::Certificate {
+            subject: x509::Name::new().cn(subject_name),
+            issuer: x509::Name::new().cn(issuer_name),
+            not_before,
+            not_after,
+            role: x509::Role::Leaf,
+            ..Default::default()
+        };
+        xhpke::issue_cert_pem(&self.inner, &signer.inner, &template)
+            .map_err(|e| JsError::new(&e.to_string()))
+    }
+
+    /// Generates a DER-encoded X.509 certificate for this public key.
+    pub fn to_cert_der(
+        &self,
+        signer: &XdsaSecretKey,
+        subject_name: &str,
+        issuer_name: &str,
+        not_before: u64,
+        not_after: u64,
+    ) -> Result<Vec<u8>, JsError> {
+        use darkbio_crypto::x509;
+
+        let template = x509::Certificate {
+            subject: x509::Name::new().cn(subject_name),
+            issuer: x509::Name::new().cn(issuer_name),
+            not_before,
+            not_after,
+            role: x509::Role::Leaf,
+            ..Default::default()
+        };
+        xhpke::issue_cert_der(&self.inner, &signer.inner, &template)
+            .map_err(|e| JsError::new(&e.to_string()))
+    }
 }
 
-/// Stateful HPKE sender for multi-message encryption. Each call to `seal`
-/// uses an auto-incrementing nonce, producing unique ciphertexts even for
-/// identical plaintexts.
+/// Result from parsing an X.509 certificate. Read timestamps first, then
+/// call `into_key()` to extract the public key (consuming this result).
+#[wasm_bindgen]
+pub struct XhpkeCertResult {
+    #[wasm_bindgen(skip)]
+    key: xhpke::PublicKey,
+    #[wasm_bindgen(skip)]
+    not_before: u64,
+    #[wasm_bindgen(skip)]
+    not_after: u64,
+}
+
+#[wasm_bindgen]
+impl XhpkeCertResult {
+    pub fn not_before(&self) -> u64 {
+        self.not_before
+    }
+    pub fn not_after(&self) -> u64 {
+        self.not_after
+    }
+    pub fn into_key(self) -> XhpkePublicKey {
+        XhpkePublicKey { inner: self.key }
+    }
+}
+
+/// Opaque xHPKE fingerprint.
+#[wasm_bindgen]
+pub struct XhpkeFingerprint {
+    pub(crate) inner: xhpke::Fingerprint,
+}
+
+#[wasm_bindgen]
+impl XhpkeFingerprint {
+    /// Creates a fingerprint from a 32-byte array.
+    pub fn from_bytes(bytes: &[u8]) -> Result<XhpkeFingerprint, JsError> {
+        let arr: [u8; 32] = bytes
+            .try_into()
+            .map_err(|_| JsError::new("fingerprint must be 32 bytes"))?;
+        Ok(Self {
+            inner: xhpke::Fingerprint::from_bytes(&arr),
+        })
+    }
+
+    /// Serializes the fingerprint to a 32-byte array.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        self.inner.to_bytes().to_vec()
+    }
+}
+
+/// Stateful HPKE sender for multi-message encryption.
 #[wasm_bindgen]
 pub struct XhpkeSender {
     inner: xhpke::Sender,
@@ -170,8 +338,7 @@ pub struct XhpkeSender {
 
 #[wasm_bindgen]
 impl XhpkeSender {
-    /// Returns the 1120-byte encapsulated key that must be transmitted to the
-    /// receiver so it can create the corresponding decryption context.
+    /// Returns the 1120-byte encapsulated key.
     pub fn encap_key(&self) -> Vec<u8> {
         self.encap_key.clone()
     }
@@ -184,9 +351,7 @@ impl XhpkeSender {
     }
 }
 
-/// Stateful HPKE receiver for multi-message decryption. Each call to `open`
-/// uses an auto-incrementing nonce. Messages must be provided in the same
-/// order they were sealed by the corresponding sender.
+/// Stateful HPKE receiver for multi-message decryption.
 #[wasm_bindgen]
 pub struct XhpkeReceiver {
     inner: xhpke::Receiver,
@@ -200,150 +365,4 @@ impl XhpkeReceiver {
             .open(msg_to_open, msg_to_auth)
             .map_err(|e| JsError::new(&format!("open failed: {:?}", e)))
     }
-}
-
-/// Parses a secret key from PEM format.
-#[wasm_bindgen]
-pub fn xhpke_secret_key_from_pem(pem: &str) -> Result<Vec<u8>, JsError> {
-    let sk = xhpke::SecretKey::from_pem(pem).map_err(|e| JsError::new(&e.to_string()))?;
-    Ok(sk.to_bytes().to_vec())
-}
-
-/// Serializes a secret key to PEM format.
-#[wasm_bindgen]
-pub fn xhpke_secret_key_to_pem(secret_key: &[u8]) -> Result<String, JsError> {
-    let seed: [u8; 32] = secret_key
-        .try_into()
-        .map_err(|_| JsError::new("secret key must be 32 bytes"))?;
-    let sk = xhpke::SecretKey::from_bytes(&seed);
-    Ok(sk.to_pem())
-}
-
-/// Parses a public key from PEM format.
-#[wasm_bindgen]
-pub fn xhpke_public_key_from_pem(pem: &str) -> Result<Vec<u8>, JsError> {
-    let pk = xhpke::PublicKey::from_pem(pem).map_err(|e| JsError::new(&e.to_string()))?;
-    Ok(pk.to_bytes().to_vec())
-}
-
-/// Serializes a public key to PEM format.
-#[wasm_bindgen]
-pub fn xhpke_public_key_to_pem(public_key: &[u8]) -> Result<String, JsError> {
-    let bytes: [u8; 1216] = public_key
-        .try_into()
-        .map_err(|_| JsError::new("public key must be 1216 bytes"))?;
-    let pk = xhpke::PublicKey::from_bytes(&bytes).map_err(|e| JsError::new(&e.to_string()))?;
-    Ok(pk.to_pem())
-}
-
-/// Parses a public key from a PEM-encoded X.509 certificate, verifying the signature.
-/// Returns: public key (1216 bytes) || not_before (8 bytes BE) || not_after (8 bytes BE)
-#[wasm_bindgen]
-pub fn xhpke_public_key_from_cert_pem(pem: &str, signer: &[u8]) -> Result<Vec<u8>, JsError> {
-    use darkbio_crypto::{x509, xdsa};
-
-    let signer_bytes: [u8; 1984] = signer
-        .try_into()
-        .map_err(|_| JsError::new("signer must be 1984 bytes"))?;
-    let signer_pk =
-        xdsa::PublicKey::from_bytes(&signer_bytes).map_err(|e| JsError::new(&e.to_string()))?;
-
-    let verified = xhpke::verify_cert_pem(pem, &signer_pk, x509::ValidityCheck::Disabled)
-        .map_err(|e| JsError::new(&e.to_string()))?;
-
-    let mut result = Vec::with_capacity(1216 + 16);
-    result.extend_from_slice(&verified.public_key.to_bytes());
-    result.extend_from_slice(&verified.cert.not_before.to_be_bytes());
-    result.extend_from_slice(&verified.cert.not_after.to_be_bytes());
-    Ok(result)
-}
-
-/// Parses a public key from a DER-encoded X.509 certificate, verifying the signature.
-/// Returns: public key (1216 bytes) || not_before (8 bytes BE) || not_after (8 bytes BE)
-#[wasm_bindgen]
-pub fn xhpke_public_key_from_cert_der(der: &[u8], signer: &[u8]) -> Result<Vec<u8>, JsError> {
-    use darkbio_crypto::{x509, xdsa};
-
-    let signer_bytes: [u8; 1984] = signer
-        .try_into()
-        .map_err(|_| JsError::new("signer must be 1984 bytes"))?;
-    let signer_pk =
-        xdsa::PublicKey::from_bytes(&signer_bytes).map_err(|e| JsError::new(&e.to_string()))?;
-
-    let verified = xhpke::verify_cert_der(der, &signer_pk, x509::ValidityCheck::Disabled)
-        .map_err(|e| JsError::new(&e.to_string()))?;
-
-    let mut result = Vec::with_capacity(1216 + 16);
-    result.extend_from_slice(&verified.public_key.to_bytes());
-    result.extend_from_slice(&verified.cert.not_before.to_be_bytes());
-    result.extend_from_slice(&verified.cert.not_after.to_be_bytes());
-    Ok(result)
-}
-
-/// Generates a PEM-encoded X.509 certificate for a public key, signed by an xDSA issuer.
-/// Note: HPKE certificates are always end-entity certificates (is_ca is ignored).
-#[wasm_bindgen]
-pub fn xhpke_public_key_to_cert_pem(
-    public_key: &[u8],
-    signer: &[u8],
-    subject_name: &str,
-    issuer_name: &str,
-    not_before: u64,
-    not_after: u64,
-) -> Result<String, JsError> {
-    use darkbio_crypto::{x509, xdsa};
-
-    let pk_bytes: [u8; 1216] = public_key
-        .try_into()
-        .map_err(|_| JsError::new("public key must be 1216 bytes"))?;
-    let pk = xhpke::PublicKey::from_bytes(&pk_bytes).map_err(|e| JsError::new(&e.to_string()))?;
-
-    let signer_seed: [u8; 64] = signer
-        .try_into()
-        .map_err(|_| JsError::new("signer must be 64 bytes"))?;
-    let signer_sk = xdsa::SecretKey::from_bytes(&signer_seed);
-
-    let template = x509::Certificate {
-        subject: x509::Name::new().cn(subject_name),
-        issuer: x509::Name::new().cn(issuer_name),
-        not_before,
-        not_after,
-        role: x509::Role::Leaf,
-        ..Default::default()
-    };
-    xhpke::issue_cert_pem(&pk, &signer_sk, &template).map_err(|e| JsError::new(&e.to_string()))
-}
-
-/// Generates a DER-encoded X.509 certificate for a public key, signed by an xDSA issuer.
-/// Note: HPKE certificates are always end-entity certificates (is_ca is ignored).
-#[wasm_bindgen]
-pub fn xhpke_public_key_to_cert_der(
-    public_key: &[u8],
-    signer: &[u8],
-    subject_name: &str,
-    issuer_name: &str,
-    not_before: u64,
-    not_after: u64,
-) -> Result<Vec<u8>, JsError> {
-    use darkbio_crypto::{x509, xdsa};
-
-    let pk_bytes: [u8; 1216] = public_key
-        .try_into()
-        .map_err(|_| JsError::new("public key must be 1216 bytes"))?;
-    let pk = xhpke::PublicKey::from_bytes(&pk_bytes).map_err(|e| JsError::new(&e.to_string()))?;
-
-    let signer_seed: [u8; 64] = signer
-        .try_into()
-        .map_err(|_| JsError::new("signer must be 64 bytes"))?;
-    let signer_sk = xdsa::SecretKey::from_bytes(&signer_seed);
-
-    let template = x509::Certificate {
-        subject: x509::Name::new().cn(subject_name),
-        issuer: x509::Name::new().cn(issuer_name),
-        not_before,
-        not_after,
-        role: x509::Role::Leaf,
-        ..Default::default()
-    };
-    xhpke::issue_cert_der(&pk, &signer_sk, &template).map_err(|e| JsError::new(&e.to_string()))
 }

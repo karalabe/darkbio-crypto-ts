@@ -9,23 +9,11 @@ import init, {
   xhpke_public_key_size,
   xhpke_encap_key_size,
   xhpke_fingerprint_size,
-  xhpke_generate,
-  xhpke_public_key,
-  xhpke_fingerprint,
-  xhpke_seal,
-  xhpke_open,
-  xhpke_new_sender,
-  xhpke_new_receiver,
-  xhpke_secret_key_from_pem,
-  xhpke_secret_key_to_pem,
-  xhpke_public_key_from_pem,
-  xhpke_public_key_to_pem,
-  xhpke_public_key_from_cert_pem,
-  xhpke_public_key_from_cert_der,
-  xhpke_public_key_to_cert_pem,
-  xhpke_public_key_to_cert_der,
-  XhpkeSender as WasmXhpkeSender,
-  XhpkeReceiver as WasmXhpkeReceiver,
+  XhpkeSecretKey as WasmSecretKey,
+  XhpkePublicKey as WasmPublicKey,
+  XhpkeFingerprint as WasmFingerprint,
+  XhpkeSender as WasmSender,
+  XhpkeReceiver as WasmReceiver,
 } from "./wasm/darkbio_crypto_wasm.js";
 
 import {
@@ -75,134 +63,119 @@ export async function sizes(): Promise<{
 
 /**
  * Fingerprint is a 32-byte unique identifier for an xHPKE key.
- * It is the SHA256 hash of the raw public key.
+ * Backed by an opaque WASM handle.
  */
 export class Fingerprint {
-  private readonly bytes: Uint8Array;
+  /** @internal */
+  readonly _wasm: WasmFingerprint;
 
-  private constructor(bytes: Uint8Array) {
-    this.bytes = bytes;
+  /** @internal */
+  constructor(inner: WasmFingerprint) {
+    this._wasm = inner;
   }
 
-  /** Converts a 32-byte array into a fingerprint. */
-  static fromBytes(bytes: Uint8Array): Fingerprint {
-    if (bytes.length !== FINGERPRINT_SIZE) {
-      throw new Error(`Fingerprint must be ${FINGERPRINT_SIZE} bytes`);
-    }
-    return new Fingerprint(new Uint8Array(bytes));
+  /** Creates a fingerprint from a 32-byte array. */
+  static async fromBytes(bytes: Uint8Array): Promise<Fingerprint> {
+    await ensureInit();
+    return new Fingerprint(WasmFingerprint.from_bytes(bytes));
   }
 
   /** Converts a fingerprint into a 32-byte array. */
   toBytes(): Uint8Array {
-    return new Uint8Array(this.bytes);
+    return new Uint8Array(this._wasm.to_bytes());
   }
 }
 
 /**
  * PublicKey contains an X-Wing public key for hybrid post-quantum encryption.
- * Uses X-Wing KEM (ML-KEM-768 + X25519) with HPKE Base mode.
+ * Backed by an opaque WASM handle — key material stays in WASM memory.
  */
 export class PublicKey {
-  private readonly bytes: Uint8Array;
+  /** @internal */
+  readonly _wasm: WasmPublicKey;
 
-  private constructor(bytes: Uint8Array) {
-    this.bytes = bytes;
+  /** @internal */
+  constructor(inner: WasmPublicKey) {
+    this._wasm = inner;
   }
 
-  /**
-   * Converts a 1216-byte array into a public key.
-   *
-   * This validates the ML-KEM-768 component by checking that all polynomial
-   * coefficients are in the valid range [0, 3329).
-   */
-  static fromBytes(bytes: Uint8Array): PublicKey {
-    if (bytes.length !== PUBLIC_KEY_SIZE) {
-      throw new Error(`PublicKey must be ${PUBLIC_KEY_SIZE} bytes`);
-    }
-    return new PublicKey(new Uint8Array(bytes));
+  /** Creates a public key from a 1216-byte array. */
+  static async fromBytes(bytes: Uint8Array): Promise<PublicKey> {
+    await ensureInit();
+    return new PublicKey(WasmPublicKey.from_bytes(bytes));
   }
 
   /** Parses a PEM string into a public key. */
   static async fromPem(pem: string): Promise<PublicKey> {
     await ensureInit();
-    const bytes = new Uint8Array(xhpke_public_key_from_pem(pem));
-    return new PublicKey(bytes);
+    return new PublicKey(WasmPublicKey.from_pem(pem));
   }
 
   /**
    * Parses a public key from a PEM-encoded X.509 certificate.
    * Verifies the certificate signature against the provided xDSA signer.
-   *
-   * @param pem - PEM-encoded X.509 certificate
-   * @param signer - The xDSA public key that signed this certificate
-   * @returns The parsed public key and validity period (notBefore, notAfter as Unix timestamps)
    */
   static async fromCertPem(
     pem: string,
     signer: XdsaPublicKey,
   ): Promise<{ key: PublicKey; notBefore: bigint; notAfter: bigint }> {
     await ensureInit();
-    const result = new Uint8Array(
-      xhpke_public_key_from_cert_pem(pem, signer.toBytes()),
-    );
-    const key = new PublicKey(result.slice(0, PUBLIC_KEY_SIZE));
-    const view = new DataView(
-      result.buffer,
-      result.byteOffset + PUBLIC_KEY_SIZE,
-    );
-    const notBefore = view.getBigUint64(0, false);
-    const notAfter = view.getBigUint64(8, false);
+    const result = WasmPublicKey.from_cert_pem(pem, signer._wasm);
+    const notBefore = BigInt(result.not_before());
+    const notAfter = BigInt(result.not_after());
+    const key = new PublicKey(result.into_key());
     return { key, notBefore, notAfter };
   }
 
   /**
    * Parses a public key from a DER-encoded X.509 certificate.
    * Verifies the certificate signature against the provided xDSA signer.
-   *
-   * @param der - DER-encoded X.509 certificate
-   * @param signer - The xDSA public key that signed this certificate
-   * @returns The parsed public key and validity period (notBefore, notAfter as Unix timestamps)
    */
   static async fromCertDer(
     der: Uint8Array,
     signer: XdsaPublicKey,
   ): Promise<{ key: PublicKey; notBefore: bigint; notAfter: bigint }> {
     await ensureInit();
-    const result = new Uint8Array(
-      xhpke_public_key_from_cert_der(der, signer.toBytes()),
-    );
-    const key = new PublicKey(result.slice(0, PUBLIC_KEY_SIZE));
-    const view = new DataView(
-      result.buffer,
-      result.byteOffset + PUBLIC_KEY_SIZE,
-    );
-    const notBefore = view.getBigUint64(0, false);
-    const notAfter = view.getBigUint64(8, false);
+    const result = WasmPublicKey.from_cert_der(der, signer._wasm);
+    const notBefore = BigInt(result.not_before());
+    const notAfter = BigInt(result.not_after());
+    const key = new PublicKey(result.into_key());
     return { key, notBefore, notAfter };
   }
 
   /** Converts a public key into a 1216-byte array. */
   toBytes(): Uint8Array {
-    return new Uint8Array(this.bytes);
+    return new Uint8Array(this._wasm.to_bytes());
   }
 
   /** Serializes a public key into a PEM string. */
   async toPem(): Promise<string> {
     await ensureInit();
-    return xhpke_public_key_to_pem(this.bytes);
+    return this._wasm.to_pem();
   }
 
   /** Returns a 256-bit unique identifier for this key (SHA256 of raw public key). */
   async fingerprint(): Promise<Fingerprint> {
     await ensureInit();
-    const fp = new Uint8Array(xhpke_fingerprint(this.bytes));
-    return Fingerprint.fromBytes(fp);
+    return new Fingerprint(this._wasm.fingerprint());
+  }
+
+  /**
+   * Creates an HPKE sender context for multi-message encryption to this
+   * public key. Returns a stateful Sender and the 1120-byte encapsulated
+   * key that must be transmitted to the recipient.
+   */
+  async newSender(
+    domain: Uint8Array,
+  ): Promise<{ sender: Sender; encapKey: Uint8Array }> {
+    await ensureInit();
+    const wasmSender = this._wasm.new_sender(domain);
+    const encapKey = new Uint8Array(wasmSender.encap_key());
+    return { sender: new Sender(wasmSender), encapKey };
   }
 
   /**
    * Seal (encrypt) a message to this public key.
-   *
-   * Uses X-Wing KEM (ML-KEM-768 + X25519) with HPKE Base mode.
    *
    * @param msgToSeal - The message to encrypt
    * @param msgToAuth - Additional data to authenticate (but not encrypt)
@@ -215,42 +188,17 @@ export class PublicKey {
     domain: Uint8Array,
   ): Promise<Uint8Array> {
     await ensureInit();
-    return new Uint8Array(xhpke_seal(this.bytes, msgToSeal, msgToAuth, domain));
-  }
-
-  /**
-   * Creates an HPKE sender context for multi-message encryption to this
-   * public key. Returns a stateful Sender and the 1120-byte encapsulated
-   * key that must be transmitted to the recipient.
-   *
-   * Messages encrypted with the returned sender must be decrypted in order
-   * by the corresponding receiver context.
-   *
-   * @param domain - Application domain for context separation
-   * @returns The sender context and the encapsulated key
-   */
-  async newSender(
-    domain: Uint8Array,
-  ): Promise<{ sender: Sender; encapKey: Uint8Array }> {
-    await ensureInit();
-    const wasmSender = xhpke_new_sender(this.bytes, domain);
-    const encapKey = new Uint8Array(wasmSender.encap_key());
-    return { sender: new Sender(wasmSender), encapKey };
+    return new Uint8Array(this._wasm.seal(msgToSeal, msgToAuth, domain));
   }
 
   /**
    * Generates a PEM-encoded X.509 certificate for this public key.
    * Note: HPKE certificates are always end-entity certificates.
-   *
-   * @param signer - The xDSA secret key to sign the certificate
-   * @param params - Certificate parameters (subject, issuer, validity)
-   * @returns PEM-encoded X.509 certificate
    */
   async toCertPem(signer: XdsaSecretKey, params: Params): Promise<string> {
     await ensureInit();
-    return xhpke_public_key_to_cert_pem(
-      this.bytes,
-      signer.toBytes(),
+    return this._wasm.to_cert_pem(
+      signer._wasm,
       params.subjectName,
       params.issuerName,
       params.notBefore,
@@ -261,17 +209,12 @@ export class PublicKey {
   /**
    * Generates a DER-encoded X.509 certificate for this public key.
    * Note: HPKE certificates are always end-entity certificates.
-   *
-   * @param signer - The xDSA secret key to sign the certificate
-   * @param params - Certificate parameters (subject, issuer, validity)
-   * @returns DER-encoded X.509 certificate
    */
   async toCertDer(signer: XdsaSecretKey, params: Params): Promise<Uint8Array> {
     await ensureInit();
     return new Uint8Array(
-      xhpke_public_key_to_cert_der(
-        this.bytes,
-        signer.toBytes(),
+      this._wasm.to_cert_der(
+        signer._wasm,
         params.subjectName,
         params.issuerName,
         params.notBefore,
@@ -283,53 +226,50 @@ export class PublicKey {
 
 /**
  * SecretKey contains an X-Wing private key for hybrid post-quantum encryption.
- * Uses X-Wing KEM (ML-KEM-768 + X25519) with HPKE Base mode.
+ * Backed by an opaque WASM handle — key material stays in WASM memory.
  */
 export class SecretKey {
-  private readonly bytes: Uint8Array;
+  /** @internal */
+  readonly _wasm: WasmSecretKey;
 
-  private constructor(bytes: Uint8Array) {
-    this.bytes = bytes;
+  /** @internal */
+  constructor(inner: WasmSecretKey) {
+    this._wasm = inner;
   }
 
   /** Creates a new, random private key. */
   static async generate(): Promise<SecretKey> {
     await ensureInit();
-    const bytes = new Uint8Array(xhpke_generate());
-    return new SecretKey(bytes);
+    return new SecretKey(WasmSecretKey.generate());
   }
 
-  /** Converts a 32-byte seed into a private key. */
-  static fromBytes(bytes: Uint8Array): SecretKey {
-    if (bytes.length !== SECRET_KEY_SIZE) {
-      throw new Error(`SecretKey must be ${SECRET_KEY_SIZE} bytes`);
-    }
-    return new SecretKey(new Uint8Array(bytes));
+  /** Creates a private key from a 32-byte seed. */
+  static async fromBytes(bytes: Uint8Array): Promise<SecretKey> {
+    await ensureInit();
+    return new SecretKey(WasmSecretKey.from_bytes(bytes));
   }
 
   /** Parses a PEM string into a private key. */
   static async fromPem(pem: string): Promise<SecretKey> {
     await ensureInit();
-    const bytes = new Uint8Array(xhpke_secret_key_from_pem(pem));
-    return new SecretKey(bytes);
+    return new SecretKey(WasmSecretKey.from_pem(pem));
   }
 
   /** Converts a private key into a 32-byte seed. */
   toBytes(): Uint8Array {
-    return new Uint8Array(this.bytes);
+    return new Uint8Array(this._wasm.to_bytes());
   }
 
   /** Serializes a private key into a PEM string. */
   async toPem(): Promise<string> {
     await ensureInit();
-    return xhpke_secret_key_to_pem(this.bytes);
+    return this._wasm.to_pem();
   }
 
   /** Retrieves the public counterpart of the secret key. */
   async publicKey(): Promise<PublicKey> {
     await ensureInit();
-    const pk = new Uint8Array(xhpke_public_key(this.bytes));
-    return PublicKey.fromBytes(pk);
+    return new PublicKey(this._wasm.public_key());
   }
 
   /** Returns a 256-bit unique identifier for this key (SHA256 of raw public key). */
@@ -339,38 +279,23 @@ export class SecretKey {
   }
 
   /**
-   * Creates an HPKE receiver context for multi-message decryption using
-   * this secret key and the given encapsulated key. Messages must be
-   * decrypted in the same order they were encrypted by the corresponding
-   * sender.
-   *
-   * @param encapKey - The 1120-byte encapsulated key from `PublicKey.newSender()`
-   * @param domain - The same application domain used during sender creation
-   * @returns The receiver context
+   * Creates an HPKE receiver context for multi-message decryption.
    */
   async newReceiver(
     encapKey: Uint8Array,
     domain: Uint8Array,
   ): Promise<Receiver> {
     await ensureInit();
-    const wasmReceiver = xhpke_new_receiver(this.bytes, encapKey, domain);
-    return new Receiver(wasmReceiver);
+    return new Receiver(this._wasm.new_receiver(encapKey, domain));
   }
 
   /**
    * Open (decrypt) a sealed message with this secret key.
    *
-   * Deconstructs the encapsulated key and ciphertext, verifying the
-   * authenticity of the (unencrypted) message-to-auth.
-   *
-   * Note: X-Wing uses Base mode (no sender authentication). The sender's
-   * identity cannot be verified from the ciphertext alone.
-   *
    * @param sealed - The sealed data from `seal()`
    * @param msgToAuth - The same additional authenticated data used during sealing
    * @param domain - The same application domain used during sealing
    * @returns The decrypted message
-   * @throws If decryption fails (wrong key, tampered data, or wrong AAD/domain)
    */
   async open(
     sealed: Uint8Array,
@@ -378,34 +303,23 @@ export class SecretKey {
     domain: Uint8Array,
   ): Promise<Uint8Array> {
     await ensureInit();
-    return new Uint8Array(xhpke_open(this.bytes, sealed, msgToAuth, domain));
+    return new Uint8Array(this._wasm.open(sealed, msgToAuth, domain));
   }
 }
 
 /**
  * Sender is a stateful HPKE encryption context for multi-message
- * communication. Each call to `seal` encrypts a message using an
- * auto-incrementing nonce, producing unique ciphertexts even for
- * identical plaintexts.
- *
- * Created via `PublicKey.newSender()`. The corresponding `Receiver` must
- * process messages in the same order they were sealed.
+ * communication. Created via `PublicKey.newSender()`.
  */
 export class Sender {
-  private readonly inner: WasmXhpkeSender;
+  private readonly inner: WasmSender;
 
   /** @internal */
-  constructor(inner: WasmXhpkeSender) {
+  constructor(inner: WasmSender) {
     this.inner = inner;
   }
 
-  /**
-   * Encrypts a message using the next nonce in the sequence.
-   *
-   * @param msgToSeal - The message to encrypt
-   * @param msgToAuth - Additional data to authenticate (but not encrypt)
-   * @returns The ciphertext
-   */
+  /** Encrypts a message using the next nonce in the sequence. */
   async seal(
     msgToSeal: Uint8Array,
     msgToAuth: Uint8Array,
@@ -417,28 +331,17 @@ export class Sender {
 
 /**
  * Receiver is a stateful HPKE decryption context for multi-message
- * communication. Each call to `open` decrypts a message using an
- * auto-incrementing nonce.
- *
- * Created via `SecretKey.newReceiver()`. Messages must be provided in the
- * same order they were sealed by the corresponding `Sender`.
+ * communication. Created via `SecretKey.newReceiver()`.
  */
 export class Receiver {
-  private readonly inner: WasmXhpkeReceiver;
+  private readonly inner: WasmReceiver;
 
   /** @internal */
-  constructor(inner: WasmXhpkeReceiver) {
+  constructor(inner: WasmReceiver) {
     this.inner = inner;
   }
 
-  /**
-   * Decrypts a message using the next nonce in the sequence.
-   *
-   * @param msgToOpen - The ciphertext to decrypt
-   * @param msgToAuth - The same additional authenticated data used during sealing
-   * @returns The decrypted message
-   * @throws If decryption fails (wrong order, tampered data, or wrong AAD)
-   */
+  /** Decrypts a message using the next nonce in the sequence. */
   async open(
     msgToOpen: Uint8Array,
     msgToAuth: Uint8Array,

@@ -227,7 +227,7 @@ export class Claims {
    * Extracts the bound xDSA public key from the Confirm claim, or undefined
    * if absent or a different key type.
    */
-  getConfirmXdsa(): XdsaPublicKey | undefined {
+  async getConfirmXdsa(): Promise<XdsaPublicKey | undefined> {
     const { kty, keyBytes } = this.readConfirm();
     if (kty !== ALGORITHM_ID_XDSA || !keyBytes) return undefined;
     return XdsaPublicKey.fromBytes(keyBytes);
@@ -237,7 +237,7 @@ export class Claims {
    * Extracts the bound xHPKE public key from the Confirm claim, or undefined
    * if absent or a different key type.
    */
-  getConfirmXhpke(): XhpkePublicKey | undefined {
+  async getConfirmXhpke(): Promise<XhpkePublicKey | undefined> {
     const { kty, keyBytes } = this.readConfirm();
     if (kty !== ALGORITHM_ID_XHPKE || !keyBytes) return undefined;
     return XhpkePublicKey.fromBytes(keyBytes);
@@ -425,9 +425,7 @@ export class Claims {
     const map = new Map<number, unknown>();
     for (const [k, v] of decoded) {
       if (typeof k !== "number") {
-        throw new Error(
-          `CWT claim key must be an integer, got ${typeof k}`,
-        );
+        throw new Error(`CWT claim key must be an integer, got ${typeof k}`);
       }
       map.set(k, v);
     }
@@ -452,7 +450,7 @@ export async function issue(
 ): Promise<Uint8Array> {
   await ensureInit();
   const claimsCbor = claims.encode();
-  return new Uint8Array(cwt_issue(claimsCbor, signer.toBytes(), domain));
+  return new Uint8Array(cwt_issue(claimsCbor, signer._wasm, domain));
 }
 
 /**
@@ -481,7 +479,7 @@ export async function verify(
   }
   const claimsCbor = cwt_verify(
     token,
-    verifier.toBytes(),
+    verifier._wasm,
     domain,
     now !== undefined ? BigInt(now) : undefined,
   );
@@ -499,8 +497,7 @@ export async function verify(
  */
 export async function signer(token: Uint8Array): Promise<XdsaFingerprint> {
   await ensureInit();
-  const fp = new Uint8Array(cwt_signer(token));
-  return XdsaFingerprint.fromBytes(fp);
+  return new XdsaFingerprint(cwt_signer(token));
 }
 
 /**

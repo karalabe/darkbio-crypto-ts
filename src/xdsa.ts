@@ -9,19 +9,10 @@ import init, {
   xdsa_public_key_size,
   xdsa_signature_size,
   xdsa_fingerprint_size,
-  xdsa_generate,
-  xdsa_public_key,
-  xdsa_fingerprint,
-  xdsa_sign,
-  xdsa_verify,
-  xdsa_secret_key_from_pem,
-  xdsa_secret_key_to_pem,
-  xdsa_public_key_from_pem,
-  xdsa_public_key_to_pem,
-  xdsa_public_key_from_cert_pem,
-  xdsa_public_key_from_cert_der,
-  xdsa_public_key_to_cert_pem,
-  xdsa_public_key_to_cert_der,
+  XdsaSecretKey as WasmSecretKey,
+  XdsaPublicKey as WasmPublicKey,
+  XdsaSignature as WasmSignature,
+  XdsaFingerprint as WasmFingerprint,
 } from "./wasm/darkbio_crypto_wasm.js";
 
 import type { Params } from "./x509.js";
@@ -67,168 +58,142 @@ export async function sizes(): Promise<{
 
 /**
  * Fingerprint is a 32-byte unique identifier for an xDSA key.
+ * Backed by an opaque WASM handle.
  */
 export class Fingerprint {
-  private readonly bytes: Uint8Array;
+  /** @internal */
+  readonly _wasm: WasmFingerprint;
 
-  private constructor(bytes: Uint8Array) {
-    this.bytes = bytes;
+  /** @internal */
+  constructor(inner: WasmFingerprint) {
+    this._wasm = inner;
   }
 
-  /** Converts a 32-byte array into a fingerprint. */
-  static fromBytes(bytes: Uint8Array): Fingerprint {
-    if (bytes.length !== FINGERPRINT_SIZE) {
-      throw new Error(`Fingerprint must be ${FINGERPRINT_SIZE} bytes`);
-    }
-    return new Fingerprint(new Uint8Array(bytes));
+  /** Creates a fingerprint from a 32-byte array. */
+  static async fromBytes(bytes: Uint8Array): Promise<Fingerprint> {
+    await ensureInit();
+    return new Fingerprint(WasmFingerprint.from_bytes(bytes));
   }
 
   /** Converts a fingerprint into a 32-byte array. */
   toBytes(): Uint8Array {
-    return new Uint8Array(this.bytes);
+    return new Uint8Array(this._wasm.to_bytes());
   }
 }
 
 /**
  * Signature is a 3373-byte xDSA signature.
- * Format: ML-DSA (3309 bytes) || Ed25519 (64 bytes)
+ * Backed by an opaque WASM handle.
  */
 export class Signature {
-  private readonly bytes: Uint8Array;
+  /** @internal */
+  readonly _wasm: WasmSignature;
 
-  private constructor(bytes: Uint8Array) {
-    this.bytes = bytes;
+  /** @internal */
+  constructor(inner: WasmSignature) {
+    this._wasm = inner;
   }
 
-  /** Converts a 3373-byte array into a signature. */
-  static fromBytes(bytes: Uint8Array): Signature {
-    if (bytes.length !== SIGNATURE_SIZE) {
-      throw new Error(`Signature must be ${SIGNATURE_SIZE} bytes`);
-    }
-    return new Signature(new Uint8Array(bytes));
+  /** Creates a signature from a 3373-byte array. */
+  static async fromBytes(bytes: Uint8Array): Promise<Signature> {
+    await ensureInit();
+    return new Signature(WasmSignature.from_bytes(bytes));
   }
 
   /** Converts a signature into a 3373-byte array. */
   toBytes(): Uint8Array {
-    return new Uint8Array(this.bytes);
+    return new Uint8Array(this._wasm.to_bytes());
   }
 }
 
 /**
- * PublicKey is an ML-DSA-65 public key paired with an Ed25519 public key for
+ * PublicKey contains a composite ML-DSA-65 + Ed25519 public key for
  * verifying quantum resistant digital signatures.
- * Format: ML-DSA (1952 bytes) || Ed25519 (32 bytes)
+ * Backed by an opaque WASM handle — key material stays in WASM memory.
  */
 export class PublicKey {
-  private readonly bytes: Uint8Array;
+  /** @internal */
+  readonly _wasm: WasmPublicKey;
 
-  private constructor(bytes: Uint8Array) {
-    this.bytes = bytes;
+  /** @internal */
+  constructor(inner: WasmPublicKey) {
+    this._wasm = inner;
   }
 
-  /** Converts a 1984-byte array into a public key. */
-  static fromBytes(bytes: Uint8Array): PublicKey {
-    if (bytes.length !== PUBLIC_KEY_SIZE) {
-      throw new Error(`PublicKey must be ${PUBLIC_KEY_SIZE} bytes`);
-    }
-    return new PublicKey(new Uint8Array(bytes));
+  /** Creates a public key from a 1984-byte array. */
+  static async fromBytes(bytes: Uint8Array): Promise<PublicKey> {
+    await ensureInit();
+    return new PublicKey(WasmPublicKey.from_bytes(bytes));
   }
 
   /** Parses a PEM string into a public key. */
   static async fromPem(pem: string): Promise<PublicKey> {
     await ensureInit();
-    const bytes = new Uint8Array(xdsa_public_key_from_pem(pem));
-    return new PublicKey(bytes);
+    return new PublicKey(WasmPublicKey.from_pem(pem));
   }
 
   /**
    * Parses a public key from a PEM-encoded X.509 certificate.
    * Verifies the certificate signature against the provided signer.
-   *
-   * @param pem - PEM-encoded X.509 certificate
-   * @param signer - The xDSA public key that signed this certificate
-   * @returns The parsed public key and validity period (notBefore, notAfter as Unix timestamps)
    */
   static async fromCertPem(
     pem: string,
     signer: PublicKey,
   ): Promise<{ key: PublicKey; notBefore: bigint; notAfter: bigint }> {
     await ensureInit();
-    const result = new Uint8Array(
-      xdsa_public_key_from_cert_pem(pem, signer.toBytes()),
-    );
-    const key = new PublicKey(result.slice(0, PUBLIC_KEY_SIZE));
-    const view = new DataView(
-      result.buffer,
-      result.byteOffset + PUBLIC_KEY_SIZE,
-    );
-    const notBefore = view.getBigUint64(0, false);
-    const notAfter = view.getBigUint64(8, false);
+    const result = WasmPublicKey.from_cert_pem(pem, signer._wasm);
+    const notBefore = BigInt(result.not_before());
+    const notAfter = BigInt(result.not_after());
+    const key = new PublicKey(result.into_key());
     return { key, notBefore, notAfter };
   }
 
   /**
    * Parses a public key from a DER-encoded X.509 certificate.
    * Verifies the certificate signature against the provided signer.
-   *
-   * @param der - DER-encoded X.509 certificate
-   * @param signer - The xDSA public key that signed this certificate
-   * @returns The parsed public key and validity period (notBefore, notAfter as Unix timestamps)
    */
   static async fromCertDer(
     der: Uint8Array,
     signer: PublicKey,
   ): Promise<{ key: PublicKey; notBefore: bigint; notAfter: bigint }> {
     await ensureInit();
-    const result = new Uint8Array(
-      xdsa_public_key_from_cert_der(der, signer.toBytes()),
-    );
-    const key = new PublicKey(result.slice(0, PUBLIC_KEY_SIZE));
-    const view = new DataView(
-      result.buffer,
-      result.byteOffset + PUBLIC_KEY_SIZE,
-    );
-    const notBefore = view.getBigUint64(0, false);
-    const notAfter = view.getBigUint64(8, false);
+    const result = WasmPublicKey.from_cert_der(der, signer._wasm);
+    const notBefore = BigInt(result.not_before());
+    const notAfter = BigInt(result.not_after());
+    const key = new PublicKey(result.into_key());
     return { key, notBefore, notAfter };
   }
 
   /** Converts a public key into a 1984-byte array. */
   toBytes(): Uint8Array {
-    return new Uint8Array(this.bytes);
+    return new Uint8Array(this._wasm.to_bytes());
   }
 
   /** Serializes a public key into a PEM string. */
   async toPem(): Promise<string> {
     await ensureInit();
-    return xdsa_public_key_to_pem(this.bytes);
+    return this._wasm.to_pem();
   }
 
   /** Returns a 256-bit unique identifier for this key. */
   async fingerprint(): Promise<Fingerprint> {
     await ensureInit();
-    const fp = new Uint8Array(xdsa_fingerprint(this.bytes));
-    return Fingerprint.fromBytes(fp);
+    return new Fingerprint(this._wasm.fingerprint());
   }
 
   /** Verifies a digital signature of the message. */
   async verify(message: Uint8Array, signature: Signature): Promise<boolean> {
     await ensureInit();
-    return xdsa_verify(this.bytes, message, signature.toBytes());
+    return this._wasm.verify(message, signature._wasm);
   }
 
   /**
    * Generates a PEM-encoded X.509 certificate for this public key.
-   *
-   * @param signer - The xDSA secret key to sign the certificate
-   * @param params - Certificate parameters (subject, issuer, validity, etc.)
-   * @returns PEM-encoded X.509 certificate
    */
   async toCertPem(signer: SecretKey, params: Params): Promise<string> {
     await ensureInit();
-    return xdsa_public_key_to_cert_pem(
-      this.bytes,
-      signer.toBytes(),
+    return this._wasm.to_cert_pem(
+      signer._wasm,
       params.subjectName,
       params.issuerName,
       params.notBefore,
@@ -240,17 +205,12 @@ export class PublicKey {
 
   /**
    * Generates a DER-encoded X.509 certificate for this public key.
-   *
-   * @param signer - The xDSA secret key to sign the certificate
-   * @param params - Certificate parameters (subject, issuer, validity, etc.)
-   * @returns DER-encoded X.509 certificate
    */
   async toCertDer(signer: SecretKey, params: Params): Promise<Uint8Array> {
     await ensureInit();
     return new Uint8Array(
-      xdsa_public_key_to_cert_der(
-        this.bytes,
-        signer.toBytes(),
+      this._wasm.to_cert_der(
+        signer._wasm,
         params.subjectName,
         params.issuerName,
         params.notBefore,
@@ -263,67 +223,63 @@ export class PublicKey {
 }
 
 /**
- * SecretKey is an ML-DSA-65 private key paired with an Ed25519 private key for
+ * SecretKey contains a composite ML-DSA-65 + Ed25519 private key for
  * creating quantum resistant digital signatures.
- * Format: ML-DSA seed (32 bytes) || Ed25519 seed (32 bytes)
+ * Backed by an opaque WASM handle — key material stays in WASM memory.
  */
 export class SecretKey {
-  private readonly bytes: Uint8Array;
+  /** @internal */
+  readonly _wasm: WasmSecretKey;
 
-  private constructor(bytes: Uint8Array) {
-    this.bytes = bytes;
+  /** @internal */
+  constructor(inner: WasmSecretKey) {
+    this._wasm = inner;
   }
 
   /** Creates a new, random private key. */
   static async generate(): Promise<SecretKey> {
     await ensureInit();
-    const bytes = new Uint8Array(xdsa_generate());
-    return new SecretKey(bytes);
+    return new SecretKey(WasmSecretKey.generate());
   }
 
   /** Creates a private key from a 64-byte seed. */
-  static fromBytes(bytes: Uint8Array): SecretKey {
-    if (bytes.length !== SECRET_KEY_SIZE) {
-      throw new Error(`SecretKey must be ${SECRET_KEY_SIZE} bytes`);
-    }
-    return new SecretKey(new Uint8Array(bytes));
+  static async fromBytes(bytes: Uint8Array): Promise<SecretKey> {
+    await ensureInit();
+    return new SecretKey(WasmSecretKey.from_bytes(bytes));
   }
 
   /** Parses a PEM string into a private key. */
   static async fromPem(pem: string): Promise<SecretKey> {
     await ensureInit();
-    const bytes = new Uint8Array(xdsa_secret_key_from_pem(pem));
-    return new SecretKey(bytes);
+    return new SecretKey(WasmSecretKey.from_pem(pem));
   }
 
   /** Converts a secret key into a 64-byte array. */
   toBytes(): Uint8Array {
-    return new Uint8Array(this.bytes);
+    return new Uint8Array(this._wasm.to_bytes());
   }
 
   /** Serializes a private key into a PEM string. */
   async toPem(): Promise<string> {
     await ensureInit();
-    return xdsa_secret_key_to_pem(this.bytes);
+    return this._wasm.to_pem();
   }
 
   /** Retrieves the public counterpart of the secret key. */
   async publicKey(): Promise<PublicKey> {
     await ensureInit();
-    const pk = new Uint8Array(xdsa_public_key(this.bytes));
-    return PublicKey.fromBytes(pk);
+    return new PublicKey(this._wasm.public_key());
   }
 
   /** Returns a 256-bit unique identifier for this key. */
   async fingerprint(): Promise<Fingerprint> {
-    const pk = await this.publicKey();
-    return pk.fingerprint();
+    await ensureInit();
+    return new Fingerprint(this._wasm.fingerprint());
   }
 
   /** Creates a digital signature of the message. */
   async sign(message: Uint8Array): Promise<Signature> {
     await ensureInit();
-    const sig = new Uint8Array(xdsa_sign(this.bytes, message));
-    return Signature.fromBytes(sig);
+    return new Signature(this._wasm.sign(message));
   }
 }

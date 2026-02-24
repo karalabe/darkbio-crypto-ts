@@ -182,7 +182,7 @@ describe("xhpke", () => {
   it("roundtrips SecretKey through bytes", async () => {
     const sk = await SecretKey.generate();
     const bytes = sk.toBytes();
-    const sk2 = SecretKey.fromBytes(bytes);
+    const sk2 = await SecretKey.fromBytes(bytes);
     expect(toHex(sk2.toBytes())).toBe(toHex(sk.toBytes()));
   });
 
@@ -190,7 +190,7 @@ describe("xhpke", () => {
     const sk = await SecretKey.generate();
     const pk = await sk.publicKey();
     const bytes = pk.toBytes();
-    const pk2 = PublicKey.fromBytes(bytes);
+    const pk2 = await PublicKey.fromBytes(bytes);
     expect(toHex(pk2.toBytes())).toBe(toHex(pk.toBytes()));
   });
 
@@ -198,7 +198,7 @@ describe("xhpke", () => {
     const sk = await SecretKey.generate();
     const fp = await sk.fingerprint();
     const bytes = fp.toBytes();
-    const fp2 = Fingerprint.fromBytes(bytes);
+    const fp2 = await Fingerprint.fromBytes(bytes);
     expect(toHex(fp2.toBytes())).toBe(toHex(fp.toBytes()));
   });
 

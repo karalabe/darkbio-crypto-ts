@@ -12,21 +12,18 @@ use darkbio_crypto::xdsa;
 use wasm_bindgen::prelude::*;
 
 /// Size of the secret key in bytes.
-/// Format: ML-DSA seed (32 bytes) || Ed25519 seed (32 bytes)
 #[wasm_bindgen]
 pub fn xdsa_secret_key_size() -> usize {
     xdsa::SECRET_KEY_SIZE
 }
 
 /// Size of the public key in bytes.
-/// Format: ML-DSA (1952 bytes) || Ed25519 (32 bytes)
 #[wasm_bindgen]
 pub fn xdsa_public_key_size() -> usize {
     xdsa::PUBLIC_KEY_SIZE
 }
 
 /// Size of a composite signature in bytes.
-/// Format: ML-DSA (3309 bytes) || Ed25519 (64 bytes)
 #[wasm_bindgen]
 pub fn xdsa_signature_size() -> usize {
     xdsa::SIGNATURE_SIZE
@@ -38,217 +35,279 @@ pub fn xdsa_fingerprint_size() -> usize {
     xdsa::FINGERPRINT_SIZE
 }
 
-/// Generates a new random private key.
+/// Opaque xDSA secret key. Key material stays inside WASM memory.
 #[wasm_bindgen]
-pub fn xdsa_generate() -> Vec<u8> {
-    xdsa::SecretKey::generate().to_bytes().to_vec()
+pub struct XdsaSecretKey {
+    pub(crate) inner: xdsa::SecretKey,
 }
 
-/// Derives the public key from a secret key.
 #[wasm_bindgen]
-pub fn xdsa_public_key(secret_key: &[u8]) -> Result<Vec<u8>, JsError> {
-    let seed: [u8; 64] = secret_key
-        .try_into()
-        .map_err(|_| JsError::new("secret key must be 64 bytes"))?;
-    let sk = xdsa::SecretKey::from_bytes(&seed);
-    Ok(sk.public_key().to_bytes().to_vec())
-}
+impl XdsaSecretKey {
+    /// Generates a new random private key.
+    pub fn generate() -> Self {
+        Self {
+            inner: xdsa::SecretKey::generate(),
+        }
+    }
 
-/// Computes the fingerprint (SHA-256 hash) of a public key.
-#[wasm_bindgen]
-pub fn xdsa_fingerprint(public_key: &[u8]) -> Result<Vec<u8>, JsError> {
-    let bytes: [u8; 1984] = public_key
-        .try_into()
-        .map_err(|_| JsError::new("public key must be 1984 bytes"))?;
-    let pk = xdsa::PublicKey::from_bytes(&bytes).map_err(|e| JsError::new(&e.to_string()))?;
-    Ok(pk.fingerprint().to_bytes().to_vec())
-}
+    /// Creates a private key from a 64-byte seed.
+    pub fn from_bytes(bytes: &[u8]) -> Result<XdsaSecretKey, JsError> {
+        let seed: [u8; 64] = bytes
+            .try_into()
+            .map_err(|_| JsError::new("secret key must be 64 bytes"))?;
+        Ok(Self {
+            inner: xdsa::SecretKey::from_bytes(&seed),
+        })
+    }
 
-/// Signs a message with a secret key.
-#[wasm_bindgen]
-pub fn xdsa_sign(secret_key: &[u8], message: &[u8]) -> Result<Vec<u8>, JsError> {
-    let seed: [u8; 64] = secret_key
-        .try_into()
-        .map_err(|_| JsError::new("secret key must be 64 bytes"))?;
-    let sk = xdsa::SecretKey::from_bytes(&seed);
-    Ok(sk.sign(message).to_bytes().to_vec())
-}
+    /// Parses a secret key from PEM format.
+    pub fn from_pem(pem: &str) -> Result<XdsaSecretKey, JsError> {
+        Ok(Self {
+            inner: xdsa::SecretKey::from_pem(pem).map_err(|e| JsError::new(&e.to_string()))?,
+        })
+    }
 
-/// Verifies a signature on a message with a public key.
-#[wasm_bindgen]
-pub fn xdsa_verify(public_key: &[u8], message: &[u8], signature: &[u8]) -> Result<bool, JsError> {
-    let pk_bytes: [u8; 1984] = public_key
-        .try_into()
-        .map_err(|_| JsError::new("public key must be 1984 bytes"))?;
-    let sig_bytes: [u8; 3373] = signature
-        .try_into()
-        .map_err(|_| JsError::new("signature must be 3373 bytes"))?;
+    /// Serializes the secret key to a 64-byte seed.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        self.inner.to_bytes().to_vec()
+    }
 
-    let pk = xdsa::PublicKey::from_bytes(&pk_bytes).map_err(|e| JsError::new(&e.to_string()))?;
-    let sig = xdsa::Signature::from_bytes(&sig_bytes);
+    /// Serializes the secret key to PEM format.
+    pub fn to_pem(&self) -> String {
+        self.inner.to_pem()
+    }
 
-    match pk.verify(message, &sig) {
-        Ok(()) => Ok(true),
-        Err(_) => Ok(false),
+    /// Returns the public key corresponding to this private key.
+    pub fn public_key(&self) -> XdsaPublicKey {
+        XdsaPublicKey {
+            inner: self.inner.public_key(),
+        }
+    }
+
+    /// Returns a 32-byte fingerprint uniquely identifying this key.
+    pub fn fingerprint(&self) -> XdsaFingerprint {
+        XdsaFingerprint {
+            inner: self.inner.fingerprint(),
+        }
+    }
+
+    /// Signs a message with this secret key.
+    pub fn sign(&self, message: &[u8]) -> XdsaSignature {
+        XdsaSignature {
+            inner: self.inner.sign(message),
+        }
     }
 }
 
-/// Parses a secret key from PEM format.
+/// Opaque xDSA public key. Key material stays inside WASM memory.
 #[wasm_bindgen]
-pub fn xdsa_secret_key_from_pem(pem: &str) -> Result<Vec<u8>, JsError> {
-    let sk = xdsa::SecretKey::from_pem(pem).map_err(|e| JsError::new(&e.to_string()))?;
-    Ok(sk.to_bytes().to_vec())
+pub struct XdsaPublicKey {
+    pub(crate) inner: xdsa::PublicKey,
 }
 
-/// Serializes a secret key to PEM format.
 #[wasm_bindgen]
-pub fn xdsa_secret_key_to_pem(secret_key: &[u8]) -> Result<String, JsError> {
-    let seed: [u8; 64] = secret_key
-        .try_into()
-        .map_err(|_| JsError::new("secret key must be 64 bytes"))?;
-    let sk = xdsa::SecretKey::from_bytes(&seed);
-    Ok(sk.to_pem())
+impl XdsaPublicKey {
+    /// Creates a public key from a 1984-byte array.
+    pub fn from_bytes(bytes: &[u8]) -> Result<XdsaPublicKey, JsError> {
+        let arr: [u8; 1984] = bytes
+            .try_into()
+            .map_err(|_| JsError::new("public key must be 1984 bytes"))?;
+        Ok(Self {
+            inner: xdsa::PublicKey::from_bytes(&arr).map_err(|e| JsError::new(&e.to_string()))?,
+        })
+    }
+
+    /// Parses a public key from PEM format.
+    pub fn from_pem(pem: &str) -> Result<XdsaPublicKey, JsError> {
+        Ok(Self {
+            inner: xdsa::PublicKey::from_pem(pem).map_err(|e| JsError::new(&e.to_string()))?,
+        })
+    }
+
+    /// Parses a public key from a PEM-encoded X.509 certificate, verifying the signature.
+    pub fn from_cert_pem(pem: &str, signer: &XdsaPublicKey) -> Result<XdsaCertResult, JsError> {
+        use darkbio_crypto::x509;
+
+        let verified = xdsa::verify_cert_pem(pem, &signer.inner, x509::ValidityCheck::Disabled)
+            .map_err(|e| JsError::new(&e.to_string()))?;
+
+        Ok(XdsaCertResult {
+            key: xdsa::PublicKey::from_bytes(&verified.public_key.to_bytes())
+                .map_err(|e| JsError::new(&e.to_string()))?,
+            not_before: verified.cert.not_before,
+            not_after: verified.cert.not_after,
+        })
+    }
+
+    /// Parses a public key from a DER-encoded X.509 certificate, verifying the signature.
+    pub fn from_cert_der(der: &[u8], signer: &XdsaPublicKey) -> Result<XdsaCertResult, JsError> {
+        use darkbio_crypto::x509;
+
+        let verified = xdsa::verify_cert_der(der, &signer.inner, x509::ValidityCheck::Disabled)
+            .map_err(|e| JsError::new(&e.to_string()))?;
+
+        Ok(XdsaCertResult {
+            key: xdsa::PublicKey::from_bytes(&verified.public_key.to_bytes())
+                .map_err(|e| JsError::new(&e.to_string()))?,
+            not_before: verified.cert.not_before,
+            not_after: verified.cert.not_after,
+        })
+    }
+
+    /// Serializes the public key to a 1984-byte array.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        self.inner.to_bytes().to_vec()
+    }
+
+    /// Serializes the public key to PEM format.
+    pub fn to_pem(&self) -> String {
+        self.inner.to_pem()
+    }
+
+    /// Returns a 32-byte fingerprint uniquely identifying this key.
+    pub fn fingerprint(&self) -> XdsaFingerprint {
+        XdsaFingerprint {
+            inner: self.inner.fingerprint(),
+        }
+    }
+
+    /// Verifies a signature on a message.
+    pub fn verify(&self, message: &[u8], signature: &XdsaSignature) -> bool {
+        self.inner.verify(message, &signature.inner).is_ok()
+    }
+
+    /// Generates a PEM-encoded X.509 certificate for this public key.
+    #[allow(clippy::too_many_arguments)]
+    pub fn to_cert_pem(
+        &self,
+        signer: &XdsaSecretKey,
+        subject_name: &str,
+        issuer_name: &str,
+        not_before: u64,
+        not_after: u64,
+        is_ca: bool,
+        path_len: Option<u8>,
+    ) -> Result<String, JsError> {
+        use darkbio_crypto::x509;
+
+        let role = if is_ca {
+            x509::Role::Authority { path_len }
+        } else {
+            x509::Role::Leaf
+        };
+        let template = x509::Certificate {
+            subject: x509::Name::new().cn(subject_name),
+            issuer: x509::Name::new().cn(issuer_name),
+            not_before,
+            not_after,
+            role,
+            ..Default::default()
+        };
+        xdsa::issue_cert_pem(&self.inner, &signer.inner, &template)
+            .map_err(|e| JsError::new(&e.to_string()))
+    }
+
+    /// Generates a DER-encoded X.509 certificate for this public key.
+    #[allow(clippy::too_many_arguments)]
+    pub fn to_cert_der(
+        &self,
+        signer: &XdsaSecretKey,
+        subject_name: &str,
+        issuer_name: &str,
+        not_before: u64,
+        not_after: u64,
+        is_ca: bool,
+        path_len: Option<u8>,
+    ) -> Result<Vec<u8>, JsError> {
+        use darkbio_crypto::x509;
+
+        let role = if is_ca {
+            x509::Role::Authority { path_len }
+        } else {
+            x509::Role::Leaf
+        };
+        let template = x509::Certificate {
+            subject: x509::Name::new().cn(subject_name),
+            issuer: x509::Name::new().cn(issuer_name),
+            not_before,
+            not_after,
+            role,
+            ..Default::default()
+        };
+        xdsa::issue_cert_der(&self.inner, &signer.inner, &template)
+            .map_err(|e| JsError::new(&e.to_string()))
+    }
 }
 
-/// Parses a public key from PEM format.
+/// Result from parsing an X.509 certificate. Read timestamps first, then
+/// call `into_key()` to extract the public key (consuming this result).
 #[wasm_bindgen]
-pub fn xdsa_public_key_from_pem(pem: &str) -> Result<Vec<u8>, JsError> {
-    let pk = xdsa::PublicKey::from_pem(pem).map_err(|e| JsError::new(&e.to_string()))?;
-    Ok(pk.to_bytes().to_vec())
-}
-
-/// Serializes a public key to PEM format.
-#[wasm_bindgen]
-pub fn xdsa_public_key_to_pem(public_key: &[u8]) -> Result<String, JsError> {
-    let bytes: [u8; 1984] = public_key
-        .try_into()
-        .map_err(|_| JsError::new("public key must be 1984 bytes"))?;
-    let pk = xdsa::PublicKey::from_bytes(&bytes).map_err(|e| JsError::new(&e.to_string()))?;
-    Ok(pk.to_pem())
-}
-
-/// Parses a public key from a PEM-encoded X.509 certificate, verifying the signature.
-/// Returns: public key (1984 bytes) || not_before (8 bytes BE) || not_after (8 bytes BE)
-#[wasm_bindgen]
-pub fn xdsa_public_key_from_cert_pem(pem: &str, signer: &[u8]) -> Result<Vec<u8>, JsError> {
-    use darkbio_crypto::x509;
-
-    let signer_bytes: [u8; 1984] = signer
-        .try_into()
-        .map_err(|_| JsError::new("signer must be 1984 bytes"))?;
-    let signer_pk =
-        xdsa::PublicKey::from_bytes(&signer_bytes).map_err(|e| JsError::new(&e.to_string()))?;
-
-    let verified = xdsa::verify_cert_pem(pem, &signer_pk, x509::ValidityCheck::Disabled)
-        .map_err(|e| JsError::new(&e.to_string()))?;
-
-    let mut result = Vec::with_capacity(1984 + 16);
-    result.extend_from_slice(&verified.public_key.to_bytes());
-    result.extend_from_slice(&verified.cert.not_before.to_be_bytes());
-    result.extend_from_slice(&verified.cert.not_after.to_be_bytes());
-    Ok(result)
-}
-
-/// Parses a public key from a DER-encoded X.509 certificate, verifying the signature.
-/// Returns: public key (1984 bytes) || not_before (8 bytes BE) || not_after (8 bytes BE)
-#[wasm_bindgen]
-pub fn xdsa_public_key_from_cert_der(der: &[u8], signer: &[u8]) -> Result<Vec<u8>, JsError> {
-    use darkbio_crypto::x509;
-
-    let signer_bytes: [u8; 1984] = signer
-        .try_into()
-        .map_err(|_| JsError::new("signer must be 1984 bytes"))?;
-    let signer_pk =
-        xdsa::PublicKey::from_bytes(&signer_bytes).map_err(|e| JsError::new(&e.to_string()))?;
-
-    let verified = xdsa::verify_cert_der(der, &signer_pk, x509::ValidityCheck::Disabled)
-        .map_err(|e| JsError::new(&e.to_string()))?;
-
-    let mut result = Vec::with_capacity(1984 + 16);
-    result.extend_from_slice(&verified.public_key.to_bytes());
-    result.extend_from_slice(&verified.cert.not_before.to_be_bytes());
-    result.extend_from_slice(&verified.cert.not_after.to_be_bytes());
-    Ok(result)
-}
-
-/// Generates a PEM-encoded X.509 certificate for a public key, signed by an issuer.
-#[wasm_bindgen]
-#[allow(clippy::too_many_arguments)]
-pub fn xdsa_public_key_to_cert_pem(
-    public_key: &[u8],
-    signer: &[u8],
-    subject_name: &str,
-    issuer_name: &str,
+pub struct XdsaCertResult {
+    #[wasm_bindgen(skip)]
+    key: xdsa::PublicKey,
+    #[wasm_bindgen(skip)]
     not_before: u64,
+    #[wasm_bindgen(skip)]
     not_after: u64,
-    is_ca: bool,
-    path_len: Option<u8>,
-) -> Result<String, JsError> {
-    use darkbio_crypto::x509;
-
-    let pk_bytes: [u8; 1984] = public_key
-        .try_into()
-        .map_err(|_| JsError::new("public key must be 1984 bytes"))?;
-    let pk = xdsa::PublicKey::from_bytes(&pk_bytes).map_err(|e| JsError::new(&e.to_string()))?;
-
-    let signer_seed: [u8; 64] = signer
-        .try_into()
-        .map_err(|_| JsError::new("signer must be 64 bytes"))?;
-    let signer_sk = xdsa::SecretKey::from_bytes(&signer_seed);
-
-    let role = if is_ca {
-        x509::Role::Authority { path_len }
-    } else {
-        x509::Role::Leaf
-    };
-    let template = x509::Certificate {
-        subject: x509::Name::new().cn(subject_name),
-        issuer: x509::Name::new().cn(issuer_name),
-        not_before,
-        not_after,
-        role,
-        ..Default::default()
-    };
-    xdsa::issue_cert_pem(&pk, &signer_sk, &template).map_err(|e| JsError::new(&e.to_string()))
 }
 
-/// Generates a DER-encoded X.509 certificate for a public key, signed by an issuer.
 #[wasm_bindgen]
-#[allow(clippy::too_many_arguments)]
-pub fn xdsa_public_key_to_cert_der(
-    public_key: &[u8],
-    signer: &[u8],
-    subject_name: &str,
-    issuer_name: &str,
-    not_before: u64,
-    not_after: u64,
-    is_ca: bool,
-    path_len: Option<u8>,
-) -> Result<Vec<u8>, JsError> {
-    use darkbio_crypto::x509;
+impl XdsaCertResult {
+    pub fn not_before(&self) -> u64 {
+        self.not_before
+    }
+    pub fn not_after(&self) -> u64 {
+        self.not_after
+    }
+    pub fn into_key(self) -> XdsaPublicKey {
+        XdsaPublicKey { inner: self.key }
+    }
+}
 
-    let pk_bytes: [u8; 1984] = public_key
-        .try_into()
-        .map_err(|_| JsError::new("public key must be 1984 bytes"))?;
-    let pk = xdsa::PublicKey::from_bytes(&pk_bytes).map_err(|e| JsError::new(&e.to_string()))?;
+/// Opaque xDSA signature.
+#[wasm_bindgen]
+pub struct XdsaSignature {
+    inner: xdsa::Signature,
+}
 
-    let signer_seed: [u8; 64] = signer
-        .try_into()
-        .map_err(|_| JsError::new("signer must be 64 bytes"))?;
-    let signer_sk = xdsa::SecretKey::from_bytes(&signer_seed);
+#[wasm_bindgen]
+impl XdsaSignature {
+    /// Creates a signature from a 3373-byte array.
+    pub fn from_bytes(bytes: &[u8]) -> Result<XdsaSignature, JsError> {
+        let arr: [u8; 3373] = bytes
+            .try_into()
+            .map_err(|_| JsError::new("signature must be 3373 bytes"))?;
+        Ok(Self {
+            inner: xdsa::Signature::from_bytes(&arr),
+        })
+    }
 
-    let role = if is_ca {
-        x509::Role::Authority { path_len }
-    } else {
-        x509::Role::Leaf
-    };
-    let template = x509::Certificate {
-        subject: x509::Name::new().cn(subject_name),
-        issuer: x509::Name::new().cn(issuer_name),
-        not_before,
-        not_after,
-        role,
-        ..Default::default()
-    };
-    xdsa::issue_cert_der(&pk, &signer_sk, &template).map_err(|e| JsError::new(&e.to_string()))
+    /// Serializes the signature to a 3373-byte array.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        self.inner.to_bytes().to_vec()
+    }
+}
+
+/// Opaque xDSA fingerprint.
+#[wasm_bindgen]
+pub struct XdsaFingerprint {
+    pub(crate) inner: xdsa::Fingerprint,
+}
+
+#[wasm_bindgen]
+impl XdsaFingerprint {
+    /// Creates a fingerprint from a 32-byte array.
+    pub fn from_bytes(bytes: &[u8]) -> Result<XdsaFingerprint, JsError> {
+        let arr: [u8; 32] = bytes
+            .try_into()
+            .map_err(|_| JsError::new("fingerprint must be 32 bytes"))?;
+        Ok(Self {
+            inner: xdsa::Fingerprint::from_bytes(&arr),
+        })
+    }
+
+    /// Serializes the fingerprint to a 32-byte array.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        self.inner.to_bytes().to_vec()
+    }
 }

@@ -110,9 +110,7 @@ describe("cwt", () => {
 
       const token = await issue(claims, issuerKey, domain);
       // now == exp should fail
-      await expect(
-        verify(token, issuerPub, domain, 2000000),
-      ).rejects.toThrow();
+      await expect(verify(token, issuerPub, domain, 2000000)).rejects.toThrow();
     });
 
     it("rejects token before nbf", async () => {
@@ -139,9 +137,7 @@ describe("cwt", () => {
       claims.expiration = 2000000;
 
       const token = await issue(claims, issuerKey, domain);
-      await expect(
-        verify(token, issuerPub, domain, 3000000),
-      ).rejects.toThrow();
+      await expect(verify(token, issuerPub, domain, 3000000)).rejects.toThrow();
     });
 
     it("rejects token with wrong verifier", async () => {
@@ -209,12 +205,12 @@ describe("cwt", () => {
       const token = await issue(claims, issuerKey, domain);
       const verified = await verify(token, issuerPub, domain, 1500000);
 
-      const recovered = verified.getConfirmXdsa();
+      const recovered = await verified.getConfirmXdsa();
       expect(recovered).toBeDefined();
       expect(toHex(recovered!.toBytes())).toBe(toHex(devicePub.toBytes()));
 
       // Should not be found as xHPKE
-      expect(verified.getConfirmXhpke()).toBeUndefined();
+      expect(await verified.getConfirmXhpke()).toBeUndefined();
     });
 
     it("roundtrips xHPKE confirm key", async () => {
@@ -232,12 +228,12 @@ describe("cwt", () => {
       const token = await issue(claims, issuerKey, domain);
       const verified = await verify(token, issuerPub, domain, 1500000);
 
-      const recovered = verified.getConfirmXhpke();
+      const recovered = await verified.getConfirmXhpke();
       expect(recovered).toBeDefined();
       expect(toHex(recovered!.toBytes())).toBe(toHex(encPub.toBytes()));
 
       // Should not be found as xDSA
-      expect(verified.getConfirmXdsa()).toBeUndefined();
+      expect(await verified.getConfirmXdsa()).toBeUndefined();
     });
   });
 
@@ -447,8 +443,8 @@ describe("cwt", () => {
       expect(verified.subject).toBe("device-001");
       expect(verified.notBefore).toBe(1000000);
       expect(verified.expiration).toBe(9000000);
-      expect(verified.getConfirmXdsa()).toBeDefined();
-      expect(toHex(verified.getConfirmXdsa()!.toBytes())).toBe(
+      expect(await verified.getConfirmXdsa()).toBeDefined();
+      expect(toHex((await verified.getConfirmXdsa())!.toBytes())).toBe(
         toHex(devicePub.toBytes()),
       );
       expect(new TextDecoder().decode(verified.ueid!)).toBe("SN-999");
