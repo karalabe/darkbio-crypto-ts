@@ -11,3 +11,4 @@ export * as x509 from "./x509.js";
 export * as xdsa from "./xdsa.js";
 export * as xhpke from "./xhpke.js";
 export * as cose from "./cose.js";
+export * as cwt from "./cwt.js";

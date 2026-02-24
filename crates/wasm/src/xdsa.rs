@@ -131,19 +131,21 @@ pub fn xdsa_public_key_to_pem(public_key: &[u8]) -> Result<String, JsError> {
 /// Returns: public key (1984 bytes) || not_before (8 bytes BE) || not_after (8 bytes BE)
 #[wasm_bindgen]
 pub fn xdsa_public_key_from_cert_pem(pem: &str, signer: &[u8]) -> Result<Vec<u8>, JsError> {
+    use darkbio_crypto::x509;
+
     let signer_bytes: [u8; 1984] = signer
         .try_into()
         .map_err(|_| JsError::new("signer must be 1984 bytes"))?;
     let signer_pk =
         xdsa::PublicKey::from_bytes(&signer_bytes).map_err(|e| JsError::new(&e.to_string()))?;
 
-    let (pk, not_before, not_after) =
-        xdsa::PublicKey::from_cert_pem(pem, signer_pk).map_err(|e| JsError::new(&e.to_string()))?;
+    let verified = xdsa::verify_cert_pem(pem, &signer_pk, x509::ValidityCheck::Disabled)
+        .map_err(|e| JsError::new(&e.to_string()))?;
 
     let mut result = Vec::with_capacity(1984 + 16);
-    result.extend_from_slice(&pk.to_bytes());
-    result.extend_from_slice(&not_before.to_be_bytes());
-    result.extend_from_slice(&not_after.to_be_bytes());
+    result.extend_from_slice(&verified.public_key.to_bytes());
+    result.extend_from_slice(&verified.cert.not_before.to_be_bytes());
+    result.extend_from_slice(&verified.cert.not_after.to_be_bytes());
     Ok(result)
 }
 
@@ -151,19 +153,21 @@ pub fn xdsa_public_key_from_cert_pem(pem: &str, signer: &[u8]) -> Result<Vec<u8>
 /// Returns: public key (1984 bytes) || not_before (8 bytes BE) || not_after (8 bytes BE)
 #[wasm_bindgen]
 pub fn xdsa_public_key_from_cert_der(der: &[u8], signer: &[u8]) -> Result<Vec<u8>, JsError> {
+    use darkbio_crypto::x509;
+
     let signer_bytes: [u8; 1984] = signer
         .try_into()
         .map_err(|_| JsError::new("signer must be 1984 bytes"))?;
     let signer_pk =
         xdsa::PublicKey::from_bytes(&signer_bytes).map_err(|e| JsError::new(&e.to_string()))?;
 
-    let (pk, not_before, not_after) =
-        xdsa::PublicKey::from_cert_der(der, signer_pk).map_err(|e| JsError::new(&e.to_string()))?;
+    let verified = xdsa::verify_cert_der(der, &signer_pk, x509::ValidityCheck::Disabled)
+        .map_err(|e| JsError::new(&e.to_string()))?;
 
     let mut result = Vec::with_capacity(1984 + 16);
-    result.extend_from_slice(&pk.to_bytes());
-    result.extend_from_slice(&not_before.to_be_bytes());
-    result.extend_from_slice(&not_after.to_be_bytes());
+    result.extend_from_slice(&verified.public_key.to_bytes());
+    result.extend_from_slice(&verified.cert.not_before.to_be_bytes());
+    result.extend_from_slice(&verified.cert.not_after.to_be_bytes());
     Ok(result)
 }
 
@@ -192,16 +196,20 @@ pub fn xdsa_public_key_to_cert_pem(
         .map_err(|_| JsError::new("signer must be 64 bytes"))?;
     let signer_sk = xdsa::SecretKey::from_bytes(&signer_seed);
 
-    let params = x509::Params {
-        subject_name,
-        issuer_name,
+    let role = if is_ca {
+        x509::Role::Authority { path_len }
+    } else {
+        x509::Role::Leaf
+    };
+    let template = x509::Certificate {
+        subject: x509::Name::new().cn(subject_name),
+        issuer: x509::Name::new().cn(issuer_name),
         not_before,
         not_after,
-        is_ca,
-        path_len,
+        role,
+        ..Default::default()
     };
-    pk.to_cert_pem(&signer_sk, &params)
-        .map_err(|e| JsError::new(&e.to_string()))
+    xdsa::issue_cert_pem(&pk, &signer_sk, &template).map_err(|e| JsError::new(&e.to_string()))
 }
 
 /// Generates a DER-encoded X.509 certificate for a public key, signed by an issuer.
@@ -229,14 +237,18 @@ pub fn xdsa_public_key_to_cert_der(
         .map_err(|_| JsError::new("signer must be 64 bytes"))?;
     let signer_sk = xdsa::SecretKey::from_bytes(&signer_seed);
 
-    let params = x509::Params {
-        subject_name,
-        issuer_name,
+    let role = if is_ca {
+        x509::Role::Authority { path_len }
+    } else {
+        x509::Role::Leaf
+    };
+    let template = x509::Certificate {
+        subject: x509::Name::new().cn(subject_name),
+        issuer: x509::Name::new().cn(issuer_name),
         not_before,
         not_after,
-        is_ca,
-        path_len,
+        role,
+        ..Default::default()
     };
-    pk.to_cert_der(&signer_sk, &params)
-        .map_err(|e| JsError::new(&e.to_string()))
+    xdsa::issue_cert_der(&pk, &signer_sk, &template).map_err(|e| JsError::new(&e.to_string()))
 }

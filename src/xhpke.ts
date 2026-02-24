@@ -14,6 +14,8 @@ import init, {
   xhpke_fingerprint,
   xhpke_seal,
   xhpke_open,
+  xhpke_new_sender,
+  xhpke_new_receiver,
   xhpke_secret_key_from_pem,
   xhpke_secret_key_to_pem,
   xhpke_public_key_from_pem,
@@ -22,6 +24,8 @@ import init, {
   xhpke_public_key_from_cert_der,
   xhpke_public_key_to_cert_pem,
   xhpke_public_key_to_cert_der,
+  XhpkeSender as WasmXhpkeSender,
+  XhpkeReceiver as WasmXhpkeReceiver,
 } from "./wasm/darkbio_crypto_wasm.js";
 
 import {
@@ -215,6 +219,26 @@ export class PublicKey {
   }
 
   /**
+   * Creates an HPKE sender context for multi-message encryption to this
+   * public key. Returns a stateful Sender and the 1120-byte encapsulated
+   * key that must be transmitted to the recipient.
+   *
+   * Messages encrypted with the returned sender must be decrypted in order
+   * by the corresponding receiver context.
+   *
+   * @param domain - Application domain for context separation
+   * @returns The sender context and the encapsulated key
+   */
+  async newSender(
+    domain: Uint8Array,
+  ): Promise<{ sender: Sender; encapKey: Uint8Array }> {
+    await ensureInit();
+    const wasmSender = xhpke_new_sender(this.bytes, domain);
+    const encapKey = new Uint8Array(wasmSender.encap_key());
+    return { sender: new Sender(wasmSender), encapKey };
+  }
+
+  /**
    * Generates a PEM-encoded X.509 certificate for this public key.
    * Note: HPKE certificates are always end-entity certificates.
    *
@@ -315,6 +339,25 @@ export class SecretKey {
   }
 
   /**
+   * Creates an HPKE receiver context for multi-message decryption using
+   * this secret key and the given encapsulated key. Messages must be
+   * decrypted in the same order they were encrypted by the corresponding
+   * sender.
+   *
+   * @param encapKey - The 1120-byte encapsulated key from `PublicKey.newSender()`
+   * @param domain - The same application domain used during sender creation
+   * @returns The receiver context
+   */
+  async newReceiver(
+    encapKey: Uint8Array,
+    domain: Uint8Array,
+  ): Promise<Receiver> {
+    await ensureInit();
+    const wasmReceiver = xhpke_new_receiver(this.bytes, encapKey, domain);
+    return new Receiver(wasmReceiver);
+  }
+
+  /**
    * Open (decrypt) a sealed message with this secret key.
    *
    * Deconstructs the encapsulated key and ciphertext, verifying the
@@ -336,5 +379,71 @@ export class SecretKey {
   ): Promise<Uint8Array> {
     await ensureInit();
     return new Uint8Array(xhpke_open(this.bytes, sealed, msgToAuth, domain));
+  }
+}
+
+/**
+ * Sender is a stateful HPKE encryption context for multi-message
+ * communication. Each call to `seal` encrypts a message using an
+ * auto-incrementing nonce, producing unique ciphertexts even for
+ * identical plaintexts.
+ *
+ * Created via `PublicKey.newSender()`. The corresponding `Receiver` must
+ * process messages in the same order they were sealed.
+ */
+export class Sender {
+  private readonly inner: WasmXhpkeSender;
+
+  /** @internal */
+  constructor(inner: WasmXhpkeSender) {
+    this.inner = inner;
+  }
+
+  /**
+   * Encrypts a message using the next nonce in the sequence.
+   *
+   * @param msgToSeal - The message to encrypt
+   * @param msgToAuth - Additional data to authenticate (but not encrypt)
+   * @returns The ciphertext
+   */
+  async seal(
+    msgToSeal: Uint8Array,
+    msgToAuth: Uint8Array,
+  ): Promise<Uint8Array> {
+    await ensureInit();
+    return new Uint8Array(this.inner.seal(msgToSeal, msgToAuth));
+  }
+}
+
+/**
+ * Receiver is a stateful HPKE decryption context for multi-message
+ * communication. Each call to `open` decrypts a message using an
+ * auto-incrementing nonce.
+ *
+ * Created via `SecretKey.newReceiver()`. Messages must be provided in the
+ * same order they were sealed by the corresponding `Sender`.
+ */
+export class Receiver {
+  private readonly inner: WasmXhpkeReceiver;
+
+  /** @internal */
+  constructor(inner: WasmXhpkeReceiver) {
+    this.inner = inner;
+  }
+
+  /**
+   * Decrypts a message using the next nonce in the sequence.
+   *
+   * @param msgToOpen - The ciphertext to decrypt
+   * @param msgToAuth - The same additional authenticated data used during sealing
+   * @returns The decrypted message
+   * @throws If decryption fails (wrong order, tampered data, or wrong AAD)
+   */
+  async open(
+    msgToOpen: Uint8Array,
+    msgToAuth: Uint8Array,
+  ): Promise<Uint8Array> {
+    await ensureInit();
+    return new Uint8Array(this.inner.open(msgToOpen, msgToAuth));
   }
 }

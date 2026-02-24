@@ -29,12 +29,13 @@ pub fn cose_sign(
         .map_err(|_| JsError::new("signer must be 64 bytes"))?;
     let sk = xdsa::SecretKey::from_bytes(&seed);
 
-    Ok(cose::sign(
+    cose::sign(
         cbor::Raw(msg_to_embed.to_vec()),
         cbor::Raw(msg_to_auth.to_vec()),
         &sk,
         domain,
-    ))
+    )
+    .map_err(|e| JsError::new(&e.to_string()))
 }
 
 /// Creates a COSE_Sign1 signature without an embedded payload (detached mode).
@@ -51,11 +52,8 @@ pub fn cose_sign_detached(
         .map_err(|_| JsError::new("signer must be 64 bytes"))?;
     let sk = xdsa::SecretKey::from_bytes(&seed);
 
-    Ok(cose::sign_detached(
-        cbor::Raw(msg_to_auth.to_vec()),
-        &sk,
-        domain,
-    ))
+    cose::sign_detached(cbor::Raw(msg_to_auth.to_vec()), &sk, domain)
+        .map_err(|e| JsError::new(&e.to_string()))
 }
 
 /// Verifies a COSE_Sign1 signature and returns the embedded payload.

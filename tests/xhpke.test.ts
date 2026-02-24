@@ -3,6 +3,8 @@ import {
   SecretKey,
   PublicKey,
   Fingerprint,
+  Sender,
+  Receiver,
   sizes,
   SECRET_KEY_SIZE,
   PUBLIC_KEY_SIZE,
@@ -270,5 +272,139 @@ describe("xhpke", () => {
 
     const pem = await alicePub.toCertPem(signer, params);
     await expect(PublicKey.fromCertPem(pem, wrongPub)).rejects.toThrow();
+  });
+
+  describe("multi-message sender/receiver", () => {
+    it("encrypts and decrypts multiple messages in order", async () => {
+      const sk = await SecretKey.generate();
+      const pk = await sk.publicKey();
+      const domain = new TextEncoder().encode("multi-msg-test");
+
+      const { sender, encapKey } = await pk.newSender(domain);
+      expect(encapKey.length).toBe(ENCAP_KEY_SIZE);
+
+      const receiver = await sk.newReceiver(encapKey, domain);
+
+      const msg1 = new TextEncoder().encode("first message");
+      const msg2 = new TextEncoder().encode("second message");
+      const msg3 = new TextEncoder().encode("third message");
+      const aad = new TextEncoder().encode("context");
+
+      const ct1 = await sender.seal(msg1, aad);
+      const ct2 = await sender.seal(msg2, aad);
+      const ct3 = await sender.seal(msg3, aad);
+
+      const pt1 = await receiver.open(ct1, aad);
+      const pt2 = await receiver.open(ct2, aad);
+      const pt3 = await receiver.open(ct3, aad);
+
+      expect(new TextDecoder().decode(pt1)).toBe("first message");
+      expect(new TextDecoder().decode(pt2)).toBe("second message");
+      expect(new TextDecoder().decode(pt3)).toBe("third message");
+    });
+
+    it("produces different ciphertexts for identical messages", async () => {
+      const sk = await SecretKey.generate();
+      const pk = await sk.publicKey();
+      const domain = new TextEncoder().encode("test");
+
+      const { sender, encapKey } = await pk.newSender(domain);
+      const receiver = await sk.newReceiver(encapKey, domain);
+
+      const msg = new TextEncoder().encode("same message");
+      const aad = new Uint8Array(0);
+
+      const ct1 = await sender.seal(msg, aad);
+      const ct2 = await sender.seal(msg, aad);
+
+      expect(toHex(ct1)).not.toBe(toHex(ct2));
+
+      const pt1 = await receiver.open(ct1, aad);
+      const pt2 = await receiver.open(ct2, aad);
+      expect(toHex(pt1)).toBe(toHex(pt2));
+    });
+
+    it("fails to decrypt with wrong secret key", async () => {
+      const sk1 = await SecretKey.generate();
+      const sk2 = await SecretKey.generate();
+      const pk1 = await sk1.publicKey();
+      const domain = new TextEncoder().encode("test");
+      const aad = new Uint8Array(0);
+
+      const { sender, encapKey } = await pk1.newSender(domain);
+      const ct = await sender.seal(new TextEncoder().encode("hello"), aad);
+
+      // Wrong key: receiver creation may succeed (KEM decap produces a
+      // different shared secret), but open will fail.
+      const receiver = await sk2.newReceiver(encapKey, domain);
+      await expect(receiver.open(ct, aad)).rejects.toThrow();
+    });
+
+    it("fails to decrypt with wrong AAD", async () => {
+      const sk = await SecretKey.generate();
+      const pk = await sk.publicKey();
+      const domain = new TextEncoder().encode("test");
+
+      const { sender, encapKey } = await pk.newSender(domain);
+      const receiver = await sk.newReceiver(encapKey, domain);
+
+      const ct = await sender.seal(
+        new TextEncoder().encode("hello"),
+        new TextEncoder().encode("aad1"),
+      );
+
+      await expect(
+        receiver.open(ct, new TextEncoder().encode("aad2")),
+      ).rejects.toThrow();
+    });
+
+    it("fails to decrypt with wrong domain", async () => {
+      const sk = await SecretKey.generate();
+      const pk = await sk.publicKey();
+      const aad = new Uint8Array(0);
+
+      const { sender, encapKey } = await pk.newSender(
+        new TextEncoder().encode("domain1"),
+      );
+      const ct = await sender.seal(new TextEncoder().encode("hello"), aad);
+
+      // Wrong domain: receiver creation may succeed, but open will fail
+      // because the derived key material differs.
+      const receiver = await sk.newReceiver(
+        encapKey,
+        new TextEncoder().encode("domain2"),
+      );
+      await expect(receiver.open(ct, aad)).rejects.toThrow();
+    });
+
+    it("handles empty messages", async () => {
+      const sk = await SecretKey.generate();
+      const pk = await sk.publicKey();
+      const domain = new TextEncoder().encode("test");
+
+      const { sender, encapKey } = await pk.newSender(domain);
+      const receiver = await sk.newReceiver(encapKey, domain);
+
+      const ct = await sender.seal(new Uint8Array(0), new Uint8Array(0));
+      const pt = await receiver.open(ct, new Uint8Array(0));
+      expect(pt.length).toBe(0);
+    });
+
+    it("handles many sequential messages", async () => {
+      const sk = await SecretKey.generate();
+      const pk = await sk.publicKey();
+      const domain = new TextEncoder().encode("test");
+
+      const { sender, encapKey } = await pk.newSender(domain);
+      const receiver = await sk.newReceiver(encapKey, domain);
+
+      const aad = new Uint8Array(0);
+      for (let i = 0; i < 20; i++) {
+        const msg = new TextEncoder().encode(`message-${i}`);
+        const ct = await sender.seal(msg, aad);
+        const pt = await receiver.open(ct, aad);
+        expect(new TextDecoder().decode(pt)).toBe(`message-${i}`);
+      }
+    });
   });
 });
